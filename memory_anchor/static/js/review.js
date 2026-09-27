@@ -9,6 +9,8 @@ const ReviewTab = {
     preview: null,
     sessionStart: Date.now(),
     jumpTarget: null,
+    annotations: [],
+    cleanupTooltip: null,
   },
 
   async render() {
@@ -182,6 +184,8 @@ const ReviewTab = {
     if (this.state.showAnswer) {
       // 加载预览
       this.loadPreview(card.id);
+      // 加载批注并应用标记
+      this.loadAnnotations(card.id);
       // 绑定评分按钮
       document.querySelectorAll('#answerBtns [data-rating]').forEach(btn => {
         btn.onclick = () => this.answer(btn.dataset.rating);
@@ -207,12 +211,39 @@ const ReviewTab = {
     } catch (e) {}
   },
 
+  async loadAnnotations(cardId) {
+    try {
+      const data = await api(`/api/annotations/${cardId}`);
+      this.state.annotations = data.annotations || [];
+
+      if (this.state.annotations.length > 0) {
+        const contentBody = document.querySelector('.review-card-face .md-body');
+        if (contentBody) {
+          const currentHtml = contentBody.innerHTML;
+          const markedHtml = markAnnotatedText(currentHtml, this.state.annotations);
+          contentBody.innerHTML = markedHtml;
+
+          if (this.state.cleanupTooltip) {
+            this.state.cleanupTooltip();
+          }
+          this.state.cleanupTooltip = bindAnnotationTooltip(contentBody, this.state.annotations);
+        }
+      }
+    } catch (e) {
+      console.warn('加载批注失败:', e);
+    }
+  },
+
   showAnswerFn() {
     this.state.showAnswer = true;
     this.renderCurrent();
   },
 
   skipCard() {
+    if (this.state.cleanupTooltip) {
+      this.state.cleanupTooltip();
+      this.state.cleanupTooltip = null;
+    }
     this.state.currentIndex++;
     this.state.showAnswer = false;
     this.renderCurrent();
@@ -222,6 +253,12 @@ const ReviewTab = {
   async answer(rating) {
     const card = this.state.queue[this.state.currentIndex];
     if (!card) return;
+
+    if (this.state.cleanupTooltip) {
+      this.state.cleanupTooltip();
+      this.state.cleanupTooltip = null;
+    }
+
     try {
       const res = await api(`/api/review/${card.id}/answer`, {
         method: 'POST',

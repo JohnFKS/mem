@@ -462,3 +462,102 @@ function buildMarkdownEditor(options = {}) {
 
   return { html, init, getValue, setValue };
 }
+
+// ==================== 批注文本标记与悬浮提示 ====================
+// 将 Markdown 渲染后的 HTML 中匹配批注引用的部分标记为高亮可悬浮元素
+// annotations: [{id, quote, note_md}, ...]
+// contentHtml: renderMarkdown() 返回的 HTML 字符串
+// 返回: 包含批注标记的 HTML 字符串
+function markAnnotatedText(contentHtml, annotations) {
+  if (!annotations || annotations.length === 0) return contentHtml;
+
+  const temp = document.createElement('div');
+  temp.innerHTML = contentHtml;
+
+  annotations.forEach((ann, idx) => {
+    if (!ann.quote || !ann.quote.trim()) return; // 整卡批注不标记
+
+    const walker = document.createTreeWalker(temp, NodeFilter.SHOW_TEXT, null);
+    const nodes = [];
+    let node;
+    while (node = walker.nextNode()) {
+      nodes.push(node);
+    }
+
+    // 只标记第一个匹配的文本节点
+    let marked = false;
+    for (const textNode of nodes) {
+      if (marked) break;
+
+      const text = textNode.textContent;
+      const quoteIndex = text.indexOf(ann.quote);
+      if (quoteIndex === -1) continue;
+
+      const before = text.slice(0, quoteIndex);
+      const match = text.slice(quoteIndex, quoteIndex + ann.quote.length);
+      const after = text.slice(quoteIndex + ann.quote.length);
+
+      const span = document.createElement('span');
+      span.className = 'annotated-text';
+      span.dataset.annotationId = ann.id;
+      span.dataset.annotationIdx = idx;
+      span.textContent = match;
+
+      const parent = textNode.parentNode;
+      if (before) parent.insertBefore(document.createTextNode(before), textNode);
+      parent.insertBefore(span, textNode);
+      if (after) parent.insertBefore(document.createTextNode(after), textNode);
+      parent.removeChild(textNode);
+
+      marked = true;
+    }
+  });
+
+  return temp.innerHTML;
+}
+
+// 为批注标记的文本绑定悬浮事件
+// container: 包含 .annotated-text 元素的父容器 (DOM 元素)
+// annotations: [{id, note_md}, ...]
+function bindAnnotationTooltip(container, annotations) {
+  if (!container || !annotations || annotations.length === 0) return;
+
+  const annotatedElements = container.querySelectorAll('.annotated-text');
+  if (annotatedElements.length === 0) return;
+
+  const tooltip = document.createElement('div');
+  tooltip.className = 'annotation-tooltip';
+  tooltip.innerHTML = `
+    <div class="annotation-tooltip-arrow"></div>
+    <div class="annotation-tooltip-content md-body"></div>
+  `;
+  document.body.appendChild(tooltip);
+
+  const contentEl = tooltip.querySelector('.annotation-tooltip-content');
+
+  annotatedElements.forEach(el => {
+    el.addEventListener('mouseenter', () => {
+      const idx = parseInt(el.dataset.annotationIdx);
+      const ann = annotations[idx];
+      if (!ann) return;
+
+      contentEl.innerHTML = renderMarkdown(ann.note_md);
+      tooltip.classList.add('show');
+
+      const rect = el.getBoundingClientRect();
+      tooltip.style.left = `${rect.left}px`;
+      tooltip.style.top = `${rect.bottom + 8}px`;
+    });
+
+    el.addEventListener('mouseleave', () => {
+      tooltip.classList.remove('show');
+    });
+  });
+
+  // 清理函数：移除 tooltip (在关闭 drawer 或切换卡片时调用)
+  return () => {
+    if (tooltip && tooltip.parentNode) {
+      tooltip.parentNode.removeChild(tooltip);
+    }
+  };
+}
