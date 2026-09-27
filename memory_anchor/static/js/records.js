@@ -1,5 +1,44 @@
 /* Memory Anchor - 记录列表 Tab */
 
+// ============ 格式修正高级选项 ============
+// 借鉴 siyuan-plugin-text-process 的可逐项开关模型: 安全子集默认开, 进阶项默认关,
+// 用户在"高级格式选项"里按需勾选。这里集中维护选项定义, 供编辑器与导入框复用。
+const FORMAT_OPT_DEFS = [
+  ['strip_links', '去链接 (保留文字)'],
+  ['strip_superscript', '去除上标/角标'],
+  ['headings_to_bold', '标题转加粗 (不切卡)'],
+  ['normalize_heading_levels', '标题层级归一 (# 起)'],
+  ['en_punct_to_cn', '英文标点→中文'],
+  ['cn_punct_to_en', '中文标点→英文'],
+  ['remove_newlines', '去除换行'],
+  ['remove_spaces', '智能去空格'],
+  ['add_paragraph_blank', '段间补空行'],
+  ['fullwidth_to_halfwidth', '全角转半角'],
+];
+
+// 生成可折叠的"高级格式选项"面板 (prefix 用于避免编辑器/导入框 id 冲突)
+function formatOptionsPanel(prefix, defaults = {}) {
+  const items = FORMAT_OPT_DEFS.map(([k, label]) =>
+    `<label class="flex items-center gap-1.5 cursor-pointer"><input type="checkbox" id="${prefix}_opt_${k}" class="w-3.5 h-3.5 accent-brand-600" ${defaults[k] ? 'checked' : ''}> ${label}</label>`
+  ).join('');
+  return `<details class="text-xs text-slate-500 mt-1">
+    <summary class="cursor-pointer select-none hover:text-slate-700">高级格式选项</summary>
+    <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 mt-2 pl-1 border-t border-slate-100 dark:border-slate-700 pt-2">
+      ${items}
+    </div>
+  </details>`;
+}
+
+// 读取某前缀下所有高级选项复选框的状态, 返回 {optionName: bool}
+function readFormatOpts(prefix) {
+  const opts = {};
+  FORMAT_OPT_DEFS.forEach(([k]) => {
+    const el = document.getElementById(`${prefix}_opt_${k}`);
+    if (el) opts[k] = el.checked;
+  });
+  return opts;
+}
+
 const RecordsTab = {
   state: {
     items: [],
@@ -405,6 +444,7 @@ const RecordsTab = {
             </div>
           </div>
           <textarea id="edContent" rows="8" placeholder="支持 Markdown 语法&#10;# 一级标题&#10;**加粗** *斜体*&#10;- 列表项&#10;\`code\`" class="w-full px-3 py-2 text-sm font-mono border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 resize-y"></textarea>
+          ${formatOptionsPanel('ed')}
         </div>
         <div>
           <label class="block text-xs text-slate-400 mb-1">图片 (可粘贴 / 拖拽 / 点击上传)</label>
@@ -518,13 +558,13 @@ const RecordsTab = {
         ta.selectionStart = ta.selectionEnd = start + ins.length + 1;
         return;
       }
-      // 纯文本粘贴: 若开启自动修正, 经后端规整后再插入
+      // 纯文本粘贴: 若开启自动修正, 经后端规整后再插入 (含用户勾选的进阶选项)
       const autoFmt = document.getElementById('edAutoFormat')?.checked;
       if (autoFmt) {
         const clip = e.clipboardData?.getData('text');
         if (clip != null) {
           e.preventDefault();
-          const formatted = await formatMarkdownText(clip, {});
+          const formatted = await formatMarkdownText(clip, readFormatOpts('ed'));
           insertAtCursor(e.target, formatted);
         }
       }
@@ -536,7 +576,7 @@ const RecordsTab = {
       const ta = document.getElementById('edContent');
       edFixBtn.textContent = '修正中…';
       edFixBtn.disabled = true;
-      ta.value = await formatMarkdownText(ta.value, {});
+      ta.value = await formatMarkdownText(ta.value, readFormatOpts('ed'));
       edFixBtn.textContent = '修正格式';
       edFixBtn.disabled = false;
       toast('已修正格式', 'success');
@@ -617,6 +657,7 @@ const RecordsTab = {
             </div>
           </div>
           <textarea id="impText" rows="8" placeholder="# 第一张卡&#10;内容...&#10;&#10;# 第二张卡&#10;内容..." class="w-full px-3 py-2 text-sm font-mono border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 resize-y"></textarea>
+          ${formatOptionsPanel('imp')}
         </div>
         <div class="flex justify-end gap-2">
           <button class="btn btn-outline" onclick="closeDrawer()">取消</button>
@@ -635,14 +676,14 @@ const RecordsTab = {
     const impText = document.getElementById('impText');
     bindPasteFormat(impText, () => ({
       enabled: document.getElementById('impAutoFormat')?.checked,
-      options: {},
+      options: readFormatOpts('imp'),
     }));
     // 一键修正
     const impFixBtn = document.getElementById('impFixBtn');
     impFixBtn.onclick = async () => {
       impFixBtn.textContent = '修正中…';
       impFixBtn.disabled = true;
-      impText.value = await formatMarkdownText(impText.value, {});
+      impText.value = await formatMarkdownText(impText.value, readFormatOpts('imp'));
       impFixBtn.textContent = '修正格式';
       impFixBtn.disabled = false;
       toast('已修正格式', 'success');
@@ -650,13 +691,13 @@ const RecordsTab = {
     document.getElementById('impBtn').onclick = async () => {
       const text = document.getElementById('impText').value;
       if (!text.trim()) { toast('请输入或上传内容', 'error'); return; }
-      const fix = document.getElementById('impAutoFormat')?.checked ? '1' : '0';
+      const fix = document.getElementById('impAutoFormat')?.checked ? 1 : 0;
+      const options = readFormatOpts('imp');
       try {
-        const res = await fetch(`/api/records/import_md?fix=${fix}`, {
+        const res = await api('/api/records/import_md', {
           method: 'POST',
-          headers: { 'Content-Type': 'text/plain' },
-          body: text,
-        }).then(r => r.json());
+          body: { text, fix, options },
+        });
         toast(`已导入 ${res.imported} 条记录`, 'success');
         closeDrawer();
         this.load();

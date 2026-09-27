@@ -393,21 +393,23 @@ def import_markdown():
     规则: 一级标题 # 作为分卡标志; 若只有一段则作为单卡
     可通过 ?fix=1 在导入前先做粘贴格式修正。
     """
+    options = {}
     if request.files.get("file"):
         text = request.files["file"].read().decode("utf-8")
     else:
-        text = (request.get_data(as_text=True) or "")
+        j = request.get_json(force=True, silent=True) or {}
+        if j:
+            text = j.get("text", "") or ""
+            options = j.get("options", {}) or {}
+            do_fix = bool(j.get("fix")) or request.args.get("fix") == "1"
+        else:
+            text = (request.get_data(as_text=True) or "")
+            do_fix = request.args.get("fix") == "1"
 
-    # ?fix=1 时先做粘贴格式修正 (安全子集, 见 app/markdown_fix)
-    do_fix = request.args.get("fix") == "1"
-    if not do_fix:
-        try:
-            do_fix = bool((request.get_json(force=True, silent=True) or {}).get("fix"))
-        except Exception:
-            do_fix = False
+    # ?fix=1 或 JSON {fix:true} 时先做粘贴格式修正 (安全子集 + 用户选项, 见 app/markdown_fix)
     if do_fix:
         from app.markdown_fix import fix_markdown
-        text = fix_markdown(text)
+        text = fix_markdown(text, options)
 
     if not text.strip():
         return jsonify({"error": "empty content"}), 400
