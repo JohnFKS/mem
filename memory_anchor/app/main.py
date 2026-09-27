@@ -38,14 +38,12 @@ from app.routes.review import bp as review_bp
 from app.routes.stats import bp as stats_bp
 from app.routes.settings import bp as settings_bp
 from app.routes.backup import bp as backup_bp
-from app.routes.annotations import bp as annotations_bp
 
 app.register_blueprint(records_bp)
 app.register_blueprint(review_bp)
 app.register_blueprint(stats_bp)
 app.register_blueprint(settings_bp)
 app.register_blueprint(backup_bp)
-app.register_blueprint(annotations_bp)
 
 
 # ---------------- 页面路由 ----------------
@@ -129,6 +127,6 @@ if __name__ == "__main__":
 ║   访问地址: http://{host}:{port}                 ║
 ║   数据目录: {Path(__file__).resolve().parent.parent / 'data'}
 ║   关闭服务: Ctrl + C                             ║
-╚══════════════════════════════════════════════════╝
+╚════════════════════════════════════════════════╝
 """)
     app.run(host=host, port=port, debug=debug, threaded=True)

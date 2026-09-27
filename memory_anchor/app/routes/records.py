@@ -30,6 +30,22 @@ def _row_to_dict(row) -> dict:
     return d
 
 
+def _annotation_to_dict(row) -> dict:
+    """annotation Row -> API dict"""
+    if row is None:
+        return None
+    d = dict(row)
+    return d
+
+
+def _get_annotations(conn, rid: int) -> list:
+    rows = conn.execute(
+        "SELECT * FROM annotation WHERE record_id = ? ORDER BY created_at ASC, id ASC",
+        (rid,),
+    ).fetchall()
+    return [_annotation_to_dict(r) for r in rows]
+
+
 @bp.route("", methods=["GET"])
 def list_records():
     """列表: 支持 search / tag / date_from / date_to / state / view (card|table)"""
@@ -73,17 +89,84 @@ def list_records():
 def get_record(rid: int):
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM study_record WHERE id = ?", (rid,)).fetchone()
-    if row is None:
-        return jsonify({"error": "not found"}), 404
-    # 同时取最近复习日志
-    with get_conn() as conn:
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        # 同时取最近复习日志与批注
         logs = conn.execute(
             "SELECT * FROM review_log WHERE record_id = ? ORDER BY reviewed_at DESC LIMIT 50",
             (rid,),
         ).fetchall()
+        annotations = _get_annotations(conn, rid)
     out = _row_to_dict(row)
     out["review_logs"] = [dict(l) for l in logs]
+    out["annotations"] = annotations
     return jsonify(out)
+
+
+@bp.route("/<int:rid>/annotations", methods=["GET"])
+def list_annotations(rid: int):
+    """列出某张卡的批注 (含整卡批注与引用片段批注)"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM study_record WHERE id = ?", (rid,)).fetchone()
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        items = _get_annotations(conn, rid)
+    return jsonify({"items": items, "total": len(items)})
+
+
+@bp.route("/<int:rid>/annotations", methods=["POST"])
+def create_annotation(rid: int):
+    """新增批注
+    请求体: {quote?: str, note_md: str, review_log_id?: int}
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM study_record WHERE id = ?", (rid,)).fetchone()
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        note_md = (data.get("note_md") or "").strip()
+        quote = (data.get("quote") or "").strip()
+        if not note_md and not quote:
+            return jsonify({"error": "note_md or quote required"}), 400
+        now = now_ts()
+        cur = conn.execute(
+            """INSERT INTO annotation (record_id, quote, note_md, review_log_id, created_at, updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            (rid, quote, note_md, data.get("review_log_id"), now, now),
+        )
+        new = conn.execute("SELECT * FROM annotation WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify(_annotation_to_dict(new)), 201
+
+
+@bp.route("/<int:rid>/annotations/<int:aid>", methods=["PUT"])
+def update_annotation(rid: int, aid: int):
+    data = request.get_json(force=True, silent=True) or {}
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM annotation WHERE id = ? AND record_id = ?", (aid, rid)).fetchone()
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        quote = data.get("quote", row["quote"])
+        note_md = data.get("note_md", row["note_md"])
+        if isinstance(quote, str):
+            quote = quote.strip()
+        if isinstance(note_md, str):
+            note_md = note_md  # 允许清空笔记正文
+        conn.execute(
+            "UPDATE annotation SET quote=?, note_md=?, updated_at=? WHERE id=?",
+            (quote, note_md, now_ts(), aid),
+        )
+        new = conn.execute("SELECT * FROM annotation WHERE id = ?", (aid,)).fetchone()
+    return jsonify(_annotation_to_dict(new))
+
+
+@bp.route("/<int:rid>/annotations/<int:aid>", methods=["DELETE"])
+def delete_annotation(rid: int, aid: int):
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM annotation WHERE id = ? AND record_id = ?", (aid, rid)).fetchone()
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        conn.execute("DELETE FROM annotation WHERE id = ?", (aid,))
+    return jsonify({"ok": True})
 
 
 @bp.route("", methods=["POST"])

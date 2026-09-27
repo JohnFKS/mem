@@ -9,8 +9,6 @@ const ReviewTab = {
     preview: null,
     sessionStart: Date.now(),
     jumpTarget: null,
-    annotations: [],
-    cleanupTooltip: null,
   },
 
   async render() {
@@ -152,7 +150,7 @@ const ReviewTab = {
             </div>
           ` : `
             <div class="flex-1 overflow-y-auto">
-              ${card.content_md ? `<div class="md-body mb-3">${renderMarkdown(card.content_md)}</div>` : '<p class="text-sm text-slate-400 italic mb-3">(无正文内容)</p>'}
+              ${card.content_md ? `<div class="md-body mb-3 anno-target" id="reviewMdBody">${renderMarkdown(card.content_md)}</div>` : '<p class="text-sm text-slate-400 italic mb-3">(无正文内容)</p>'}
               ${images ? `<div class="space-y-2 mb-3">${images}</div>` : ''}
               ${card.note ? `<div class="text-sm p-2 bg-amber-50 dark:bg-amber-900/20 rounded">${escapeHtml(card.note)}</div>` : ''}
             </div>
@@ -184,12 +182,12 @@ const ReviewTab = {
     if (this.state.showAnswer) {
       // 加载预览
       this.loadPreview(card.id);
-      // 加载批注并应用标记
-      this.loadAnnotations(card.id);
       // 绑定评分按钮
       document.querySelectorAll('#answerBtns [data-rating]').forEach(btn => {
         btn.onclick = () => this.answer(btn.dataset.rating);
       });
+      // 加载并高亮批注 (含右键菜单)
+      this.loadAnnotations(card.id);
     } else {
       // 点击卡片本身也可以显示答案
       wrap.querySelector('.review-card-face').onclick = (e) => {
@@ -212,26 +210,13 @@ const ReviewTab = {
   },
 
   async loadAnnotations(cardId) {
+    const el = document.getElementById('reviewMdBody');
+    if (!el) return;
     try {
-      const data = await api(`/api/annotations/${cardId}`);
-      this.state.annotations = data.annotations || [];
-
-      if (this.state.annotations.length > 0) {
-        const contentBody = document.querySelector('.review-card-face .md-body');
-        if (contentBody) {
-          const currentHtml = contentBody.innerHTML;
-          const markedHtml = markAnnotatedText(currentHtml, this.state.annotations);
-          contentBody.innerHTML = markedHtml;
-
-          if (this.state.cleanupTooltip) {
-            this.state.cleanupTooltip();
-          }
-          this.state.cleanupTooltip = bindAnnotationTooltip(contentBody, this.state.annotations);
-        }
-      }
-    } catch (e) {
-      console.warn('加载批注失败:', e);
-    }
+      const anns = await api(`/api/records/${cardId}/annotations`);
+      applyAnnotations(el, anns);
+      initAnnotationContextMenu(el, cardId);
+    } catch (e) {}
   },
 
   showAnswerFn() {
@@ -240,10 +225,6 @@ const ReviewTab = {
   },
 
   skipCard() {
-    if (this.state.cleanupTooltip) {
-      this.state.cleanupTooltip();
-      this.state.cleanupTooltip = null;
-    }
     this.state.currentIndex++;
     this.state.showAnswer = false;
     this.renderCurrent();
@@ -253,12 +234,6 @@ const ReviewTab = {
   async answer(rating) {
     const card = this.state.queue[this.state.currentIndex];
     if (!card) return;
-
-    if (this.state.cleanupTooltip) {
-      this.state.cleanupTooltip();
-      this.state.cleanupTooltip = null;
-    }
-
     try {
       const res = await api(`/api/review/${card.id}/answer`, {
         method: 'POST',

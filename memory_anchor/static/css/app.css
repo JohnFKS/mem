@@ -109,7 +109,7 @@ html, body { font-family: 'Inter', 'PingFang SC', 'Microsoft YaHei', system-ui, 
 input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: rgb(58 159 248);
-  box-shadow: 0 0 0 3px rgba(58, 159, 248, 0.15);
+  box-shadow: 0 0 0 3px rgba(58, 159 248, 0.15);
 }
 
 /* 按钮基础样式 */
@@ -149,10 +149,77 @@ input:focus, textarea:focus, select:focus {
   transition: all .15s;
   cursor: pointer;
 }
-.dropzone.dragover { border-color: rgb(58 159 248); background: rgba(58, 159, 248, 0.05); }
+.dropzone.dragover { border-color: rgb(58 159 248); background: rgba(58, 159 248, 0.05); }
 
 /* 隐藏滚动条但保持滚动 */
 .scrollbar-thin::-webkit-scrollbar { width: 4px; }
 
 /* 防止 markdown 内容溢出 */
 .md-content img { max-width: 100%; height: auto; }
+
+/* ============ 批注 (Annotation) ============ */
+/* 正文内被批注引用的片段: 视觉差异化高亮 */
+.anno-hl {
+  background: #fef9c3;
+  border-bottom: 2px solid rgb(245 158 11);
+  border-radius: 2px;
+  cursor: help;
+  padding: 0 1px;
+}
+.dark .anno-hl {
+  background: rgba(245, 158, 11, 0.22);
+  border-bottom-color: rgb(251 191 36);
+}
+
+/* 悬浮显示批注笔记的浮层 */
+.anno-tooltip {
+  position: fixed;
+  z-index: 60;
+  max-width: 440px;
+  max-height: 60vh;
+  overflow: auto;
+  background: white;
+  color: rgb(15 23 42);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.18);
+  padding: 0.75rem 0.9rem;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  pointer-events: none;
+}
+.dark .anno-tooltip {
+  background: rgb(30 41 59);
+  color: rgb(226 232 240);
+  border-color: rgb(51 65 85);
+}
+
+/* 右键菜单 */
+.anno-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 180px;
+  background: white;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 10px;
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.18);
+  padding: 0.25rem;
+  overflow: hidden;
+}
+.dark .anno-menu {
+  background: rgb(30 41 59);
+  border-color: rgb(51 65 85);
+}
+.anno-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  border-radius: 6px;
+  cursor: pointer;
+  color: rgb(15 23 42);
+}
+.anno-menu-item:hover { background: rgba(58, 159, 248, 0.12); }
+.anno-menu-item:disabled { color: rgb(148 163 184); cursor: not-allowed; }
+.dark .anno-menu-item { color: rgb(226 232 240); }

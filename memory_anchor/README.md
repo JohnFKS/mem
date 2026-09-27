@@ -117,6 +117,17 @@ python3 run.py --port 8080 --host 0.0.0.0
 
 **数学公式渲染**：内容采用 [KaTeX](https://katex.org/) 实时渲染，支持 `$$...$$`（独立成行 / 显示态）、`$...$`（行内）、以及原始 LaTeX 标记 `\[...\]`、`\(...\)`。公式在渲染前会被抽离为占位符，避免 Markdown 把公式里的下划线 / 星号等当成强调等语法破坏（代码块与行内代码内的公式不会被误渲染）。
 
+### 2.1 右键批注（附属笔记）
+
+批注是学习记录的**附属信息**，**不单独复习**，也不支持「批注的批注」。用于在多次复习中对某段文字产生新理解时，把理解沉淀下来。
+
+- **引用片段 + 笔记**：每条批注抓两样东西——`quote`（被批注的原文快照，可空 = 整卡批注）和 `note_md`（你的新理解）。批注笔记的输入能力**与新建卡片完全一致**：支持 Markdown、公式（KaTeX 渲染）、粘贴自动修正、高级格式选项。
+- **右键添加**：在记录详情或复习页的卡片正文里**选中一段文字**，右键 → 「对选中文字添加批注」，选中内容会自动带入「引用片段」输入框；也可右键 → 「添加整卡批注」（引用留空）。
+- **正文内联高亮**：带 `quote` 的批注会在正文里按**引用内容**在**所有出现位置**高亮（即使同一段文字在正文里出现多处，也会全部显示，不依赖脆弱的字符偏移）；鼠标悬浮高亮处即弹出批注笔记。整卡批注（空引用）不高亮，仅在批注列表里展示。
+- **管理**：记录详情页有「批注 (N)」区块，可新增 / 编辑 / 删除；批注随卡片导出与备份（整库 SQLite 拷贝）。
+
+> 实现：后端 `app/routes/records.py` 的 `/api/records/<id>/annotations` 增删改查 + `app/db.py` 的 `annotation` 表；前端 `static/js/annotations.js`（右键菜单 / 内联高亮 / 悬浮 / 抽屉）与 `static/js/markdown_editor.js`（复用编辑器）。
+
 ### 3. 复习流程
 
 1. 顶部导航点击「复习」Tab，或按 `Ctrl+R`
@@ -181,12 +192,12 @@ memory_anchor/
 │   ├── fsrs.py                # FSRS-5 算法实现
 │   ├── utils.py               # 通用工具函数
 │   ├── markdown_fix.py        # Markdown 粘贴格式修正
-│   └── routes/
-│       ├── records.py         # 学习记录 API
-│       ├── review.py          # 复习中心 API
-│       ├── stats.py           # 数据统计 API
-│       ├── settings.py        # 设置 API
-│       └── backup.py          # 备份恢复 API
+│   ├── routes/
+│   │   ├── records.py         # 记录 CRUD + 图片 + 导入导出 + 批注 API
+│   │   ├── review.py          # 复习中心 API
+│   │   ├── stats.py           # 数据统计 API
+│   │   ├── settings.py        # 设置 API
+│   │   └── backup.py          # 备份恢复 API
 ├── templates/
 │   └── index.html             # 单页应用入口
 ├── static/
@@ -197,6 +208,8 @@ memory_anchor/
 │   │   ├── review.js          # 复习 Tab
 │   │   ├── stats.js           # 统计 Tab
 │   │   ├── settings.js        # 设置 Tab
+│   │   ├── markdown_editor.js # 可复用 Markdown 编辑器组件
+│   │   ├── annotations.js     # 右键批注：菜单/内联高亮/悬浮/抽屉
 │   │   └── app.js             # 主应用
 │   └── uploads/               # 上传的图片
 ├── data/
@@ -323,6 +336,7 @@ A: 可选使用 PyInstaller：`pyinstaller --onefile --add-data "templates:templ
 | P1 | 搜索/筛选/批量操作 | ✅ |
 | P1 | 详情抽屉 | ✅ |
 | P1 | 完整复习流程 | ✅ |
+| P2 | 右键批注（引用片段 + 笔记，正文内联高亮，与新建卡片一致输入能力） | ✅ |
 | P2 | 全局快捷键 | ✅ |
 | P2 | CSV/MD 导出 | ✅ |
 | P2 | 统计图表 | ✅ |

@@ -340,9 +340,6 @@ const RecordsTab = {
   async showDetail(id) {
     try {
       const it = await api(`/api/records/${id}`);
-      const annsRes = await api(`/api/annotations/record/${id}`);
-      const annotations = annsRes.items || [];
-
       const tags = (it.tags || []).map(t => `<span class="badge bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">#${escapeHtml(t)}</span>`).join('');
       const images = (it.image_paths || []).map(p => `<img src="${p}" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer" onclick="window.open('${p}','_blank')">`).join('<div class="h-2"></div>');
       const logs = (it.review_logs || []).slice(0, 20).map(l => {
@@ -356,20 +353,6 @@ const RecordsTab = {
           <td class="py-1.5 px-2 text-xs text-slate-500">S:${l.stability_after.toFixed(1)} D:${l.difficulty_after.toFixed(1)}</td>
         </tr>`;
       }).join('');
-
-      const annsHtml = annotations.map(ann => `
-        <div class="p-3 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
-          ${ann.quote ? `<div class="text-xs text-slate-500 italic border-l-2 border-slate-300 dark:border-slate-600 pl-2">"${escapeHtml(ann.quote)}"</div>` : ''}
-          <div class="md-body text-sm">${renderMarkdown(ann.note_md)}</div>
-          <div class="flex items-center gap-2 text-[10px] text-slate-400">
-            <span>${tsToDateTime(ann.created_at)}</span>
-            <div class="ml-auto flex gap-1">
-              <button class="text-brand-600 hover:underline" onclick="RecordsTab.editAnnotation(${ann.id}, ${id})">编辑</button>
-              <button class="text-red-600 hover:underline" onclick="RecordsTab.deleteAnnotation(${ann.id}, ${id})">删除</button>
-            </div>
-          </div>
-        </div>
-      `).join('');
 
       const content = `
         <div class="p-5 space-y-4">
@@ -396,9 +379,9 @@ const RecordsTab = {
             <div class="bg-slate-50 dark:bg-slate-800/50 rounded p-2"><div class="text-slate-400">难度</div><div class="font-medium">${it.difficulty.toFixed(2)} / 10</div></div>
           </div>
           ${it.content_md ? `
-            <div id="detailContent">
-              <div class="text-xs text-slate-400 mb-1">Markdown 内容</div>
-              <div class="md-body p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg select-text">${renderMarkdown(it.content_md)}</div>
+            <div>
+              <div class="text-xs text-slate-400 mb-1">Markdown 内容（选中文字右键可添加批注）</div>
+              <div class="md-body p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg anno-target" id="detailMdBody">${renderMarkdown(it.content_md)}</div>
             </div>` : ''}
           ${images ? `
             <div>
@@ -406,13 +389,17 @@ const RecordsTab = {
               <div class="space-y-2">${images}</div>
             </div>` : ''}
           ${it.note ? `<div><div class="text-xs text-slate-400 mb-1">备注</div><div class="text-sm p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg">${escapeHtml(it.note)}</div></div>` : ''}
-          <div>
-            <div class="flex items-center justify-between mb-2">
-              <div class="text-xs text-slate-400">批注 (${annotations.length})</div>
-              <button class="btn btn-outline text-xs" onclick="RecordsTab.addAnnotation(${id})">+ 新增批注</button>
-            </div>
-            <div class="space-y-2">${annsHtml || '<div class="text-xs text-slate-400 text-center py-4">暂无批注</div>'}</div>
-          </div>
+          ${(it.annotations && it.annotations.length) ? `
+            <div>
+              <div class="text-xs text-slate-400 mb-1 flex items-center justify-between">
+                <span>批注 (${it.annotations.length})</span>
+                <button class="text-xs text-brand-600 hover:underline" onclick="openAnnotationDrawer(${it.id}, '')">添加批注</button>
+              </div>
+              <div class="space-y-2">${it.annotations.map(annoListItem).join('')}</div>
+            </div>` : `
+            <div>
+              <button class="btn btn-outline w-full text-sm" onclick="openAnnotationDrawer(${it.id}, '')">+ 添加批注（选中正文右键也可）</button>
+            </div>`}
           ${logs ? `
             <div>
               <div class="text-xs text-slate-400 mb-1">复习历史 (最近 ${Math.min(it.review_logs.length, 20)} 次)</div>
@@ -428,133 +415,15 @@ const RecordsTab = {
         </div>
       `;
       openDrawer(it.title, content, { width: '640px' });
-
-      // 绑定文本选中事件用于快捷批注
-      setTimeout(() => {
-        const detailContent = document.getElementById('detailContent');
-        if (detailContent) {
-          detailContent.addEventListener('mouseup', () => {
-            const selection = window.getSelection();
-            const selectedText = selection.toString().trim();
-            if (selectedText) {
-              RecordsTab.addAnnotation(id, selectedText);
-            }
-          });
-        }
-      }, 100);
+      // 批注: 正文内联高亮 + 右键菜单
+      const detailBody = document.getElementById('detailMdBody');
+      if (detailBody) {
+        applyAnnotations(detailBody, it.annotations || []);
+        initAnnotationContextMenu(detailBody, it.id);
+      }
     } catch (e) {
       toast('加载详情失败: ' + e.message, 'error');
     }
-  },
-
-  // ============ 批注功能 ============
-  addAnnotation(recordId, selectedQuote = '') {
-    const editor = buildMarkdownEditor({
-      prefix: 'ann',
-      showQuote: true,
-      rows: 5,
-      label: '批注笔记',
-      quoteLabel: '引用片段',
-      quotePlaceholder: '选中的原文片段 (可空 = 整卡批注)'
-    });
-
-    const content = `
-      <div class="p-5 space-y-3">
-        ${editor.html}
-        <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
-          <button class="btn btn-outline" onclick="closeDrawer()">取消</button>
-          <button id="annSaveBtn" class="btn btn-primary">保存</button>
-        </div>
-      </div>
-    `;
-    openDrawer('新增批注', content, { width: '560px' });
-    setTimeout(() => {
-      editor.init();
-      if (selectedQuote) {
-        editor.setValue({ quote: selectedQuote, content_md: '' });
-      }
-      document.getElementById('annSaveBtn').onclick = async () => {
-        const data = editor.getValue();
-        if (!data.content_md.trim()) {
-          toast('请输入批注内容', 'error');
-          return;
-        }
-        try {
-          await api('/api/annotations', {
-            method: 'POST',
-            body: { record_id: recordId, quote: data.quote, note_md: data.content_md }
-          });
-          toast('批注已保存', 'success');
-          closeDrawer();
-          this.showDetail(recordId);
-        } catch (e) {
-          toast('保存失败: ' + e.message, 'error');
-        }
-      };
-    }, 100);
-  },
-
-  async editAnnotation(annId, recordId) {
-    try {
-      const annsRes = await api(`/api/annotations/record/${recordId}`);
-      const ann = (annsRes.items || []).find(a => a.id === annId);
-      if (!ann) return;
-
-      const editor = buildMarkdownEditor({
-        prefix: 'ann',
-        showQuote: true,
-        rows: 5,
-        label: '批注笔记',
-        quoteLabel: '引用片段'
-      });
-
-      const content = `
-        <div class="p-5 space-y-3">
-          ${editor.html}
-          <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
-            <button class="btn btn-outline" onclick="closeDrawer()">取消</button>
-            <button id="annSaveBtn" class="btn btn-primary">保存</button>
-          </div>
-        </div>
-      `;
-      openDrawer('编辑批注', content, { width: '560px' });
-      setTimeout(() => {
-        editor.init();
-        editor.setValue({ quote: ann.quote, content_md: ann.note_md });
-        document.getElementById('annSaveBtn').onclick = async () => {
-          const data = editor.getValue();
-          if (!data.content_md.trim()) {
-            toast('请输入批注内容', 'error');
-            return;
-          }
-          try {
-            await api(`/api/annotations/${annId}`, {
-              method: 'PUT',
-              body: { quote: data.quote, note_md: data.content_md }
-            });
-            toast('已更新', 'success');
-            closeDrawer();
-            this.showDetail(recordId);
-          } catch (e) {
-            toast('更新失败: ' + e.message, 'error');
-          }
-        };
-      }, 100);
-    } catch (e) {
-      toast('加载失败: ' + e.message, 'error');
-    }
-  },
-
-  async deleteAnnotation(annId, recordId) {
-    confirmDialog('确定删除此批注吗?', async () => {
-      try {
-        await api(`/api/annotations/${annId}`, { method: 'DELETE' });
-        toast('已删除', 'success');
-        this.showDetail(recordId);
-      } catch (e) {
-        toast('删除失败: ' + e.message, 'error');
-      }
-    }, { danger: true, okText: '删除' });
   },
 
   // ============ 编辑器 ============
@@ -581,18 +450,7 @@ const RecordsTab = {
           </div>
         </div>
         <div>
-          <div class="flex items-center justify-between mb-1">
-            <label class="block text-xs text-slate-400">Markdown 内容</label>
-            <div class="flex items-center gap-3">
-              <label class="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer" title="粘贴时自动修正格式 (去空行 / 项目符号 / LaTeX 公式等)">
-                <input id="edAutoFormat" type="checkbox" class="w-3.5 h-3.5 accent-brand-600" checked> 粘贴自动修正
-              </label>
-              <button id="edFixBtn" class="text-xs text-brand-600 hover:underline" type="button">修正格式</button>
-              <button id="edPreviewBtn" class="text-xs text-brand-600 hover:underline">预览</button>
-            </div>
-          </div>
-          <textarea id="edContent" rows="8" placeholder="支持 Markdown 语法&#10;# 一级标题&#10;**加粗** *斜体*&#10;- 列表项&#10;\`code\`" class="w-full px-3 py-2 text-sm font-mono border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 resize-y"></textarea>
-          ${formatOptionsPanel('ed')}
+          ${buildMarkdownEditor('ed')}
         </div>
         <div>
           <label class="block text-xs text-slate-400 mb-1">图片 (可粘贴 / 拖拽 / 点击上传)</label>
@@ -681,76 +539,19 @@ const RecordsTab = {
       res.urls.forEach(u => imagePaths.push(u));
       renderImageList();
     };
-    // 粘贴处理: 图片走上传, 纯文本可选自动格式修正
-    document.getElementById('edContent').addEventListener('paste', async (e) => {
-      const items = e.clipboardData?.items || [];
-      const files = [];
-      for (const item of items) {
-        if (item.type.startsWith('image/')) {
-          const f = item.getAsFile();
-          if (f) files.push(f);
-        }
-      }
-      if (files.length > 0) {
-        e.preventDefault();
+    // 共用 Markdown 编辑器: 粘贴自动修正 + 修正格式 + 预览 + (卡片含图片粘贴上传)
+    initMarkdownEditor('ed', {
+      imageUploader: async (files) => {
         const fd = new FormData();
         files.forEach(f => fd.append('images', f));
-        const res = await api('/api/records/upload_image', { method: 'POST', body: fd });
-        res.urls.forEach(u => imagePaths.push(u));
-        renderImageList();
-        // 同时插入 markdown 引用
-        const ta = e.target;
-        const ins = res.urls.map(u => `![](${u})`).join('\n');
-        const start = ta.selectionStart;
-        ta.value = ta.value.slice(0, start) + ins + '\n' + ta.value.slice(start);
-        ta.selectionStart = ta.selectionEnd = start + ins.length + 1;
-        return;
-      }
-      // 纯文本粘贴: 若开启自动修正, 经后端规整后再插入 (含用户勾选的进阶选项)
-      const autoFmt = document.getElementById('edAutoFormat')?.checked;
-      if (autoFmt) {
-        const clip = e.clipboardData?.getData('text');
-        if (clip != null) {
-          e.preventDefault();
-          const formatted = await formatMarkdownText(clip, readFormatOpts('ed'));
-          insertAtCursor(e.target, formatted);
-        }
-      }
+        try {
+          const res = await api('/api/records/upload_image', { method: 'POST', body: fd });
+          res.urls.forEach(u => imagePaths.push(u));
+          renderImageList();
+          return res.urls;
+        } catch (err) { toast('上传失败: ' + err.message, 'error'); return []; }
+      },
     });
-
-    // 一键修正当前文本域格式
-    const edFixBtn = document.getElementById('edFixBtn');
-    edFixBtn.onclick = async () => {
-      const ta = document.getElementById('edContent');
-      edFixBtn.textContent = '修正中…';
-      edFixBtn.disabled = true;
-      ta.value = await formatMarkdownText(ta.value, readFormatOpts('ed'));
-      edFixBtn.textContent = '修正格式';
-      edFixBtn.disabled = false;
-      toast('已修正格式', 'success');
-    };
-
-    // 预览切换
-    document.getElementById('edPreviewBtn').onclick = () => {
-      const ta = document.getElementById('edContent');
-      const btn = document.getElementById('edPreviewBtn');
-      if (ta.dataset.preview === '1') {
-        ta.dataset.preview = '0';
-        ta.style.display = '';
-        ta.value = ta.dataset.raw || ta.value;
-        btn.textContent = '预览';
-      } else {
-        ta.dataset.preview = '1';
-        ta.dataset.raw = ta.value;
-        ta.style.display = 'none';
-        const wrap = document.createElement('div');
-        wrap.className = 'md-body w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 min-h-[8rem]';
-        wrap.id = 'edPreviewWrap';
-        wrap.innerHTML = renderMarkdown(ta.value);
-        ta.parentNode.insertBefore(wrap, ta);
-        btn.textContent = '编辑';
-      }
-    };
 
     // 保存
     document.getElementById('edSaveBtn').onclick = async () => {

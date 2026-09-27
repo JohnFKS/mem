@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS study_record (
     stability       REAL NOT NULL DEFAULT 0,
     difficulty      REAL NOT NULL DEFAULT 0,
     reps            INTEGER NOT NULL DEFAULT 0,
-    lapses          INTEGER NOT NULL DEFAULT 0,        -- 遗忘次数
+    lapses          INTEGER NOT NULL DEFAULT 0,       -- 遗忘次数
     last_review     REAL NOT NULL DEFAULT 0,           -- unix ts
     due             REAL NOT NULL DEFAULT 0,           -- unix ts 下次到期
     -- 元信息
@@ -90,11 +90,15 @@ CREATE TABLE IF NOT EXISTS backup_log (
     note            TEXT NOT NULL DEFAULT ''
 );
 
+-- 批注: 作为学习记录的附属信息, 不单独复习。每条批注抓两样东西:
+--   quote   : 被批注的原文快照 (可空 = 整卡批注)
+--   note_md : 用户的新理解 (Markdown + 公式)
 CREATE TABLE IF NOT EXISTS annotation (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     record_id       INTEGER NOT NULL,
-    quote           TEXT NOT NULL DEFAULT '',          -- 引用片段 (可空 = 整卡批注)
-    note_md         TEXT NOT NULL DEFAULT '',          -- 批注笔记 (Markdown+公式)
+    quote           TEXT NOT NULL DEFAULT '',          -- 引用的原文片段 (快照)
+    note_md         TEXT NOT NULL DEFAULT '',          -- 批注正文 (Markdown + 公式)
+    review_log_id   INTEGER,                           -- 若由复习时创建, 关联当次 review_log
     created_at      REAL NOT NULL,
     updated_at      REAL NOT NULL,
     FOREIGN KEY (record_id) REFERENCES study_record(id) ON DELETE CASCADE
