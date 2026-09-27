@@ -101,6 +101,8 @@ python3 run.py --port 8080 --host 0.0.0.0
 
 > 后端实现见 `app/markdown_fix.py`，前端调用见 `app/routes/records.py` 的 `/api/records/format`。
 
+**数学公式渲染**：内容采用 [KaTeX](https://katex.org/) 实时渲染，支持 `$$...$$`（独立成行 / 显示态）、`$...$`（行内）、以及原始 LaTeX 标记 `\[...\]`、`\(...\)`。公式在渲染前会被抽离为占位符，避免 Markdown 把公式里的下划线 / 星号等当成强调等语法破坏（代码块与行内代码内的公式不会被误渲染）。
+
 ### 3. 复习流程
 
 1. 顶部导航点击「复习」Tab，或按 `Ctrl+R`
@@ -300,6 +302,7 @@ A: 可选使用 PyInstaller：`pyinstaller --onefile --add-data "templates:templ
 | P0 | 图片粘贴/上传 | ✅ |
 | P0 | Markdown 录入 + 导入 | ✅ |
 | P1 | 粘贴格式修正 (借鉴 siyuan 文本处理) | ✅ |
+| P1 | 数学公式 KaTeX 渲染 ($$/$/\[/\() | ✅ |
 | P0 | FSRS-5 复习逻辑 | ✅ |
 | P0 | 本地读写 + 备份恢复 | ✅ |
 | P1 | 四页 UI | ✅ |

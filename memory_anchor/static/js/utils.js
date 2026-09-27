@@ -72,11 +72,67 @@ function initMarkdown() {
   }
 }
 
+// 用 KaTeX 渲染一段 LaTeX 公式, 失败时降级为原文 (带错误提示)
+function renderKatex(tex, displayMode) {
+  tex = (tex || '').trim();
+  if (typeof window.katex === 'undefined') {
+    const d = displayMode ? '$$' : '$';
+    return `${d}${tex}${d}`;
+  }
+  try {
+    return window.katex.renderToString(tex, {
+      displayMode: !!displayMode,
+      throwOnError: false,
+      errorColor: '#e11d48',
+    });
+  } catch (e) {
+    const d = displayMode ? '$$' : '$';
+    return `<span class="katex-error" style="color:#e11d48" title="${escapeHtml(e.message || '')}">${d}${tex}${d}</span>`;
+  }
+}
+
+// 渲染 Markdown, 并正确渲染数学公式 ($$...$$ / $...$ / \[...\] / \(...\))。
+// 关键: 先把代码块/行内代码和公式抽离成占位符, 让 markdown-it 不会把公式里的
+// 下划线/星号等当成 Markdown 语法破坏掉, 渲染结束后再还原成 KaTeX 的 HTML。
 function renderMarkdown(text) {
   if (!App.md) initMarkdown();
-  try { return App.md.render(text || ''); }
-  catch (e) { return `<p>${(text||'').replace(/</g,'&lt;')}</p>`; }
+  if (!text) return '';
+  try {
+    // 私有区字符作占位哨兵, 保证不会与正文 / Markdown 符号冲突
+    const S = '\uE000';
+    const E = '\uE001';
+    const codeTok = (i) => `${S}C${i}${E}`;
+    const mathTok = (i) => `${S}M${i}${E}`;
+    const codeStore = [];
+    const mathStore = [];
+
+    let src = String(text);
+
+    // 1) 抽离代码 (围栏 ``` 或 ~~~, 以及行内 `code`), 避免其中 $ \[ 被误判为公式
+    src = src.replace(/```[\s\S]*?```/g, (m) => { codeStore.push(m); return codeTok(codeStore.length - 1); });
+    src = src.replace(/~~~[\s\S]*?~~~/g, (m) => { codeStore.push(m); return codeTok(codeStore.length - 1); });
+    src = src.replace(/`[^`\n]+`/g, (m) => { codeStore.push(m); return codeTok(codeStore.length - 1); });
+
+    // 2) 抽离数学公式 —— 显示公式优先, 再处理行内公式
+    src = src.replace(/\$\$([\s\S]+?)\$\$/g, (m, t) => { mathStore.push(renderKatex(t, true)); return mathTok(mathStore.length - 1); });
+    src = src.replace(/\\\[([\s\S]+?)\\\]/g, (m, t) => { mathStore.push(renderKatex(t, true)); return mathTok(mathStore.length - 1); });
+    src = src.replace(/\$([^$\n]+?)\$/g, (m, t) => { mathStore.push(renderKatex(t, false)); return mathTok(mathStore.length - 1); });
+    src = src.replace(/\\\(([^\n]+?)\\\)/g, (m, t) => { mathStore.push(renderKatex(t, false)); return mathTok(mathStore.length - 1); });
+
+    // 3) 交给 markdown-it 渲染 (此时公式与代码都已变成占位符, 不会被 Markdown 语法破坏)
+    let html = App.md.render(src);
+
+    // 4) 还原公式 -> KaTeX 生成的 HTML
+    html = html.replace(/\uE000M(\d+)\uE001/g, (m, i) => mathStore[+i]);
+    // 5) 还原代码 -> 转义后的原文本 (等宽展示)
+    html = html.replace(/\uE000C(\d+)\uE001/g, (m, i) => `<code class="hljs">${escapeHtml(codeStore[+i])}</code>`);
+    return html;
+  } catch (e) {
+    console.error('renderMarkdown 失败:', e);
+    return `<p>${escapeHtml(text)}</p>`;
+  }
 }
+
 
 // ==================== 时间格式化 ====================
 function tsToDate(ts) {
