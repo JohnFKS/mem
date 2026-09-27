@@ -1,0 +1,297 @@
+# 记忆锚 · Memory Anchor
+
+> 极简桌面学习记忆工具｜用户主动录入 + FSRS-5 科学遗忘复习 + 本地隐私存储
+
+## 项目特点
+
+- **极简可控**：仅支持图片粘贴/上传、Markdown 文本手动录入两种方式，无任何自动监听、无后台采集
+- **科学记忆**：内置 FSRS-5 间隔重复算法，根据记忆熟练度动态调整复习周期
+- **本地隐私**：所有数据存储在本地 SQLite 单文件，无云端上传、无网络请求
+- **跨端稳定**：纯 Python (Flask) 实现，Windows / Linux / macOS 通用，零外部依赖服务
+- **轻量无负担**：启动 < 1 秒，内存占用 < 50MB
+
+---
+
+## 一、快速开始
+
+### 1. 环境要求
+
+- **Python 3.10+**（[下载地址](https://www.python.org/downloads/)）
+  - Windows 安装时勾选 "Add Python to PATH"
+  - Linux: `sudo apt install python3 python3-pip` (Ubuntu/Debian)
+  - macOS: `brew install python`
+
+### 2. 启动方式
+
+#### Linux / macOS
+
+```bash
+cd memory_anchor
+./start.sh                # 默认 http://127.0.0.1:7788
+./start.sh 8080           # 指定端口
+```
+
+#### Windows
+
+双击 `start.bat`，或在命令行：
+
+```cmd
+cd memory_anchor
+start.bat
+start.bat 8080
+```
+
+#### 手动启动（任何系统）
+
+```bash
+cd memory_anchor
+pip install -r requirements.txt   # 首次需要安装依赖
+python3 run.py                    # 默认 http://127.0.0.1:7788
+python3 run.py --port 8080 --host 0.0.0.0
+```
+
+### 3. 访问应用
+
+启动后浏览器打开 **http://127.0.0.1:7788** 即可使用。
+
+> 💡 建议将该地址加入浏览器书签，或使用 Chrome/Edge 的「安装为应用」功能把它变成桌面快捷方式。
+
+---
+
+## 二、核心功能使用指南
+
+### 1. 录入学习内容（仅两种方式）
+
+#### 方式一：手动新增记录
+
+1. 点击右上角「+ 新增」按钮，或按 `Ctrl+N`
+2. 填写标题（必填）、标签、学习日期、Markdown 正文
+3. **图片上传**：
+   - 点击图片上传区域选择文件
+   - 直接拖拽图片到上传区
+   - 在 Markdown 编辑框中 `Ctrl+V` 粘贴剪贴板图片（自动上传并插入引用）
+4. 点击「创建」即可
+
+#### 方式二：从 Markdown 批量导入
+
+1. 在记录页点击「导入」按钮
+2. 上传 `.md` 文件，或直接粘贴 Markdown 文本
+3. 每个 `# 一级标题` 会作为一张卡片的标题，其后的内容作为正文
+4. 若无标题，整篇作为一张卡片
+
+### 2. 复习流程
+
+1. 顶部导航点击「复习」Tab，或按 `Ctrl+R`
+2. 系统自动筛选到期卡片，按 `due` 时间排序
+3. 看到标题后先尝试回忆，按 `Space` 或点击「显示答案」查看完整内容
+4. 根据回忆情况评分（三档）：
+   - **完全忘记** (快捷键 `1`)：10 分钟后重学，稳定性大幅下降
+   - **记忆模糊** (快捷键 `2`)：稍后复习，间隔略增
+   - **熟练掌握** (快捷键 `3`/`4`)：按 FSRS-5 计算的间隔（数日到数月）后复习
+5. 评分后自动进入下一张，完成全部队列时显示「🎉 复习完成」
+
+> **FSRS-5 智能排期**：算法根据卡片当前的「稳定性 S」和「难度 D」动态计算下次复习时间，目标保留率默认 90%。同一张卡片反复熟练后，间隔会指数增长（1天→3天→8天→21天→60天→...），避免无意义重复。
+
+### 3. 数据统计
+
+- **总览卡片**：总卡片数、今日待复习、今日已复习、记忆健康度
+- **学习热力图**：GitHub 风格 365 天活动图
+- **保留率趋势**：近 30 天复习时回忆起的平均概率
+- **本周活动**：每天新增 vs 复习条数对比
+- **标签分布**：Top 10 标签柱状图
+
+### 4. 数据管理
+
+#### 备份与恢复
+
+设置页 → 数据备份与恢复：
+
+- **手动备份**：点击「立即备份」生成 `backup_YYYYMMDD_HHMMSS.db`
+- **自动备份**：开启后每 N 天自动备份一次（启动时检查）
+- **恢复**：点击「↻」从备份还原（恢复前会自动创建安全快照）
+- **下载**：点击「⬇」下载备份文件到本地
+- **删除**：点击「✕」清理旧备份
+
+#### 导出记录
+
+记录页 → 「导出」：
+
+- **CSV**：包含全部字段，适合 Excel 分析
+- **Markdown**：合并为单一 `.md` 文档，便于二次归档
+
+### 5. 个性化设置
+
+- **主题**：浅色 / 深色（自动跟随系统）
+- **目标保留率**：0.70 ~ 0.99，推荐 0.85 ~ 0.95
+- **快捷键**：自定义新增/复习/搜索快捷键
+- **学习目标**：每日新卡片数 / 复习数
+
+---
+
+## 三、文件结构
+
+```
+memory_anchor/
+├── run.py                     # 入口脚本
+├── start.sh                   # Linux/macOS 启动器
+├── start.bat                  # Windows 启动器
+├── requirements.txt           # Python 依赖
+├── app/
+│   ├── __init__.py
+│   ├── main.py                # Flask 应用主文件
+│   ├── db.py                  # SQLite 数据库初始化
+│   ├── fsrs.py                # FSRS-5 算法实现
+│   ├── utils.py               # 通用工具函数
+│   └── routes/
+│       ├── records.py         # 学习记录 API
+│       ├── review.py          # 复习中心 API
+│       ├── stats.py           # 数据统计 API
+│       ├── settings.py        # 设置 API
+│       └── backup.py          # 备份恢复 API
+├── templates/
+│   └── index.html             # 单页应用入口
+├── static/
+│   ├── css/app.css            # 自定义样式
+│   ├── js/
+│   │   ├── utils.js           # 通用工具
+│   │   ├── records.js         # 记录 Tab
+│   │   ├── review.js          # 复习 Tab
+│   │   ├── stats.js           # 统计 Tab
+│   │   ├── settings.js        # 设置 Tab
+│   │   └── app.js             # 主应用
+│   └── uploads/               # 上传的图片
+├── data/
+│   └── memory_anchor.db       # SQLite 数据库(运行后自动生成)
+└── backups/                   # 备份文件目录
+```
+
+---
+
+## 四、数据存储位置
+
+| 文件 | 路径 | 说明 |
+|------|------|------|
+| 主数据库 | `data/memory_anchor.db` | 全部学习记录/复习日志/设置 |
+| 图片上传 | `static/uploads/` | 粘贴/上传的所有图片 |
+| 备份文件 | `backups/*.db` | 手动 + 自动备份 |
+
+> 💡 **完整迁移**：把整个 `memory_anchor/` 目录复制到新机器即可，无任何外部依赖。
+
+---
+
+## 五、技术架构
+
+### 后端 (Python)
+
+- **Web 框架**：Flask 3.1（轻量、稳定、零配置）
+- **数据库**：SQLite 3（Python 内置，单文件存储，支持 WAL 模式并发）
+- **核心算法**：FSRS-5 自实现（19 权重 + 幂函数遗忘曲线 + 稳定性/难度更新）
+- **图片处理**：Pillow（仅用于文件读写）
+- **Markdown 解析**：markdown-it-py（前端用 markdown-it.js 渲染）
+
+### 前端 (无构建工具)
+
+- **CSS**：Tailwind CSS 3 (CDN JIT)
+- **JS**：原生 ES6 + 模块化（无 React/Vue 等框架依赖）
+- **图标**：内联 SVG（无外部图标库）
+- **字体**：Inter + PingFang SC（系统字体回退）
+
+### 数据库 Schema
+
+```sql
+study_record (id, title, tags, content_md, image_paths, learn_date, note,
+              state, stability, difficulty, reps, lapses, last_review, due,
+              priority, pinned, created_at, updated_at)
+
+review_log (id, record_id, rating, reviewed_at, elapsed_days, scheduled_days,
+            retention, state_before, state_after,
+            stability_before, stability_after,
+            difficulty_before, difficulty_after)
+
+settings (key, value)  -- JSON-encoded
+
+backup_log (id, backup_time, backup_type, file_path, file_size, note)
+```
+
+---
+
+## 六、常用操作
+
+### 修改默认端口
+
+编辑 `run.py` 中的 `default=7788`，或启动时加参数：
+
+```bash
+python3 run.py --port 9000
+```
+
+### 让局域网其他设备访问
+
+```bash
+python3 run.py --host 0.0.0.0 --port 7788
+```
+
+然后局域网内其他设备访问 `http://你的IP:7788`。
+
+### 数据完全重置
+
+```bash
+rm -rf data/ backups/ static/uploads/
+python3 run.py  # 会自动重建空数据库
+```
+
+### 升级依赖
+
+```bash
+pip3 install -U -r requirements.txt
+```
+
+---
+
+## 七、FAQ
+
+**Q: 为什么是 Web 应用而不是桌面原生应用?**
+A: Web 形式让 Windows/Linux/macOS 三端体验完全一致，且无需安装 Electron 等臃肿运行时。启动后用浏览器访问即可，也可以「安装为应用」变成桌面快捷方式。
+
+**Q: 我的数据会上传到云端吗?**
+A: 不会。所有数据都在本地 `data/memory_anchor.db` 一个 SQLite 文件中。整个应用启动后只在你本机回环地址 127.0.0.1 通信，无任何外网请求。
+
+**Q: FSRS-5 比传统艾宾浩斯好在哪?**
+A: 传统艾宾浩斯是固定时间点复习（1天/2天/4天/7天/15天...），所有人一样；FSRS-5 根据你每张卡的回忆表现动态调整间隔，简单的内容间隔迅速拉长，难的内容间隔短，节省 30%+ 复习时间。
+
+**Q: 卡片太多会不会卡?**
+A: SQLite 单文件支持千万级行数据，加上 WAL 模式和索引，万级卡片列表秒开。前端列表分页加载，默认 500 条上限。
+
+**Q: 如何打包成单可执行文件?**
+A: 可选使用 PyInstaller：`pyinstaller --onefile --add-data "templates:templates" --add-data "static:static" run.py`，但通常直接运行 `python3 run.py` 已足够轻量。
+
+---
+
+## 八、开发优先级实现状态
+
+按需求文档 P0 ~ P3 分级，全部已实现：
+
+| 优先级 | 内容 | 状态 |
+|--------|------|------|
+| P0 | SQLite 4 张表 | ✅ |
+| P0 | 图片粘贴/上传 | ✅ |
+| P0 | Markdown 录入 + 导入 | ✅ |
+| P0 | FSRS-5 复习逻辑 | ✅ |
+| P0 | 本地读写 + 备份恢复 | ✅ |
+| P1 | 四页 UI | ✅ |
+| P1 | 搜索/筛选/批量操作 | ✅ |
+| P1 | 详情抽屉 | ✅ |
+| P1 | 完整复习流程 | ✅ |
+| P2 | 全局快捷键 | ✅ |
+| P2 | CSV/MD 导出 | ✅ |
+| P2 | 统计图表 | ✅ |
+| P2 | 学习热力图 | ✅ |
+| P3 | 主题切换 | ✅ |
+| P3 | FSRS 参数自定义 | ✅ |
+| P3 | UI 动效 + 反馈 | ✅ |
+
+---
+
+## 九、License
+
+MIT License - 自由使用、修改、分发。

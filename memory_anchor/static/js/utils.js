@@ -1,0 +1,233 @@
+/* Memory Anchor - 通用工具 */
+
+// ==================== 全局状态 ====================
+// 注意: App 在 app.js 中声明, 这里仅声明依赖的占位
+window.App = window.App || { settings: null, currentTab: 'records', md: null };
+
+// ==================== API 封装 ====================
+async function api(path, options = {}) {
+  const opts = {
+    headers: { 'Accept': 'application/json' },
+    ...options,
+  };
+  if (opts.body && !(opts.body instanceof FormData) && typeof opts.body === 'object') {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(opts.body);
+  }
+  try {
+    const res = await fetch(path, opts);
+    const ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) {
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      return data;
+    }
+    return res;
+  } catch (err) {
+    console.error(`API ${path}:`, err);
+    throw err;
+  }
+}
+
+// ==================== Toast ====================
+function toast(msg, type = 'info', duration = 2500) {
+  const container = document.getElementById('toastContainer');
+  if (!container) return alert(msg);
+  const colors = {
+    info: 'bg-slate-800 text-white',
+    success: 'bg-emerald-600 text-white',
+    error: 'bg-red-600 text-white',
+    warn: 'bg-amber-500 text-white',
+  };
+  const el = document.createElement('div');
+  el.className = `toast ${colors[type] || colors.info} px-4 py-2 rounded-lg shadow-lg text-sm max-w-xs`;
+  el.textContent = msg;
+  container.appendChild(el);
+  setTimeout(() => {
+    el.style.transition = 'opacity .3s';
+    el.style.opacity = '0';
+    setTimeout(() => el.remove(), 300);
+  }, duration);
+}
+
+// ==================== Markdown 渲染 ====================
+function initMarkdown() {
+  if (window.markdownit) {
+    App.md = window.markdownit({
+      html: false,
+      linkify: true,
+      breaks: true,
+      highlight: function (str, lang) {
+        if (lang && window.hljs && hljs.getLanguage(lang)) {
+          try { return `<pre><code class="hljs language-${lang}">${hljs.highlight(str, {language: lang}).value}</code></pre>`; } catch (e) {}
+        }
+        return `<pre><code class="hljs">${md.utils.escapeHtml(str)}</code></pre>`;
+      }
+    });
+  } else {
+    // fallback: 简单换行
+    App.md = { render: s => `<p>${(s||'').replace(/\n/g, '<br>')}</p>` };
+  }
+}
+
+function renderMarkdown(text) {
+  if (!App.md) initMarkdown();
+  try { return App.md.render(text || ''); }
+  catch (e) { return `<p>${(text||'').replace(/</g,'&lt;')}</p>`; }
+}
+
+// ==================== 时间格式化 ====================
+function tsToDate(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  return d.toLocaleDateString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' });
+}
+
+function tsToDateTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  return d.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+function relativeTime(ts) {
+  if (!ts) return '';
+  const now = Date.now() / 1000;
+  const diff = now - ts;
+  if (diff < 60) return '刚刚';
+  if (diff < 3600) return `${Math.floor(diff/60)}分钟前`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}小时前`;
+  if (diff < 86400 * 7) return `${Math.floor(diff/86400)}天前`;
+  return tsToDate(ts);
+}
+
+function dueLabel(ts) {
+  if (!ts) return '未排期';
+  const now = Date.now() / 1000;
+  const diff = ts - now;
+  if (diff < 0) {
+    const overdue = Math.floor(-diff / 86400);
+    return overdue === 0 ? '今日到期' : `逾期 ${overdue} 天`;
+  }
+  if (diff < 3600) return `${Math.floor(diff/60)} 分钟后`;
+  if (diff < 86400) return `${Math.floor(diff/3600)} 小时后`;
+  const days = Math.floor(diff / 86400);
+  return `${days} 天后`;
+}
+
+// ==================== 状态徽章 ====================
+function stateBadge(state) {
+  const map = { new: ['badge-new', '新'], learning: ['badge-learning', '学习中'],
+                review: ['badge-review', '复习中'], relearning: ['badge-relearning', '重学'] };
+  const [cls, label] = map[state] || ['badge-new', state];
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+function escapeHtml(s) {
+  return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function truncate(s, n = 100) {
+  s = s || '';
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+// ==================== 主题切换 ====================
+function applyTheme(theme) {
+  if (theme === 'dark') document.documentElement.classList.add('dark');
+  else document.documentElement.classList.remove('dark');
+}
+
+async function toggleTheme() {
+  const newTheme = document.documentElement.classList.contains('dark') ? 'light' : 'dark';
+  applyTheme(newTheme);
+  try { await api('/api/settings', { method: 'PUT', body: { theme: newTheme } }); } catch (e) {}
+  App.settings = App.settings || {};
+  App.settings.theme = newTheme;
+}
+
+// ==================== 抽屉组件 ====================
+function openDrawer(title, contentHtml, options = {}) {
+  const root = document.getElementById('drawerRoot');
+  const width = options.width || '540px';
+  root.innerHTML = `
+    <div class="drawer-backdrop" onclick="closeDrawer()"></div>
+    <aside class="drawer" style="width: min(${width}, 100vw);">
+      <header class="px-5 py-3.5 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between shrink-0">
+        <h2 class="font-semibold text-base truncate">${escapeHtml(title)}</h2>
+        <button onclick="closeDrawer()" class="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg">
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </header>
+      <div class="flex-1 overflow-y-auto" id="drawerBody">${contentHtml}</div>
+    </aside>
+  `;
+  requestAnimationFrame(() => {
+    root.querySelector('.drawer').classList.add('open');
+    root.querySelector('.drawer-backdrop').classList.add('open');
+  });
+  return root.querySelector('.drawer');
+}
+
+function closeDrawer() {
+  const root = document.getElementById('drawerRoot');
+  const d = root.querySelector('.drawer');
+  const b = root.querySelector('.drawer-backdrop');
+  if (d) d.classList.remove('open');
+  if (b) b.classList.remove('open');
+  setTimeout(() => { root.innerHTML = ''; }, 250);
+}
+
+// ==================== 确认对话框 ====================
+function confirmDialog(message, onConfirm, options = {}) {
+  const root = document.getElementById('drawerRoot');
+  const html = `
+    <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" id="confirmMask">
+      <div class="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-sm w-full mx-4 p-5">
+        <h3 class="font-semibold text-base mb-2">${escapeHtml(options.title || '确认操作')}</h3>
+        <p class="text-sm text-slate-600 dark:text-slate-300 mb-4">${escapeHtml(message)}</p>
+        <div class="flex gap-2 justify-end">
+          <button class="btn btn-outline" id="confirmCancel">取消</button>
+          <button class="btn ${options.danger ? 'btn-danger' : 'btn-primary'}" id="confirmOk">${options.okText || '确定'}</button>
+        </div>
+      </div>
+    </div>
+  `;
+  const old = root.innerHTML;
+  root.innerHTML = html;
+  document.getElementById('confirmCancel').onclick = () => { root.innerHTML = old; };
+  document.getElementById('confirmOk').onclick = () => {
+    root.innerHTML = old;
+    onConfirm && onConfirm();
+  };
+}
+
+// ==================== 加载设置 ====================
+async function loadSettings() {
+  try {
+    App.settings = await api('/api/settings');
+    applyTheme(App.settings.theme || 'light');
+  } catch (e) {
+    App.settings = { theme: 'light' };
+    applyTheme('light');
+  }
+}
+
+// ==================== 文件大小格式化 ====================
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+// ==================== 防抖 ====================
+function debounce(fn, wait = 300) {
+  let t;
+  return function(...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), wait);
+  };
+}
