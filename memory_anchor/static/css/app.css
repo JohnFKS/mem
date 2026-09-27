@@ -157,6 +157,15 @@ input:focus, textarea:focus, select:focus {
 /* 防止 markdown 内容溢出 */
 .md-content img { max-width: 100%; height: auto; }
 
+/* ============ 待复习列表 (复习页侧边栏) ============ */
+.ql-check {
+  accent-color: rgb(2 100 200);
+  width: 13px; height: 13px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.ql-item { -webkit-tap-highlight-color: transparent; }
+
 /* ============ 批注 (Annotation) ============ */
 /* 正文内被批注引用的片段: 视觉差异化高亮。
    关键: 高亮必须是"半透明荧光笔"而非不透明色块, 且不覆盖文字颜色 (color: inherit)。
