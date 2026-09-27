@@ -1,4 +1,4 @@
-﻿# Byte-compiled / optimized / DLL files
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -45,6 +45,14 @@ conda-meta/
 # OS
 .DS_Store
 Thumbs.db
+
+# Runtime data (SQLite DB, uploaded images, backups)
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.wal
+*.shm
 
 # Logs
 *.log

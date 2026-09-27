@@ -231,3 +231,46 @@ function debounce(fn, wait = 300) {
     t = setTimeout(() => fn.apply(this, args), wait);
   };
 }
+
+// ==================== Markdown 粘贴格式修正 ====================
+// 后端 /api/records/format 借鉴 siyuan-plugin-text-process, 对粘贴进来的脏
+// Markdown 做规整 (LaTeX 公式 / 项目符号 / 空行 / 换行 等)。
+async function formatMarkdownText(text, options = {}) {
+  try {
+    const res = await api('/api/records/format', { method: 'POST', body: { text, options } });
+    return (res && res.text != null) ? res.text : text;
+  } catch (e) {
+    console.warn('Markdown 格式修正失败:', e);
+    return text;
+  }
+}
+
+// 在光标处插入文本, 并同步光标位置与 input 事件
+function insertAtCursor(el, text) {
+  if (!el) return;
+  const start = el.selectionStart != null ? el.selectionStart : el.value.length;
+  const end = el.selectionEnd != null ? el.selectionEnd : el.value.length;
+  el.value = el.value.slice(0, start) + text + el.value.slice(end);
+  const pos = start + text.length;
+  el.selectionStart = el.selectionEnd = pos;
+  el.focus();
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+// 给文本框绑定"粘贴时自动修正格式": 拦截纯文本粘贴, 经后端修正后再插入
+function bindPasteFormat(textarea, getOptions) {
+  if (!textarea) return;
+  textarea.addEventListener('paste', async (e) => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+    const hasImage = Array.from(cd.items || []).some(i => i.type.startsWith('image/'));
+    if (hasImage) return; // 图片交给其它处理器
+    const opts = getOptions ? getOptions() : {};
+    if (!opts || opts.enabled === false) return;
+    const clip = cd.getData('text');
+    if (clip == null) return;
+    e.preventDefault();
+    const formatted = await formatMarkdownText(clip, opts.options || {});
+    insertAtCursor(e.target, formatted);
+  });
+}

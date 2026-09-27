@@ -368,15 +368,46 @@ def export_records():
         )
 
 
+@bp.route("/format", methods=["POST"])
+def format_markdown():
+    """对 Markdown 文本做粘贴格式修正
+    请求体 (JSON): {"text": "...", "options": {...}}  或直接 text/plain 传文本
+    返回: {"text": "修正后的文本"}
+    借鉴 siyuan-plugin-text-process 的粘贴处理逻辑。
+    """
+    if request.content_type and request.content_type.startswith("text/plain"):
+        text = request.get_data(as_text=True) or ""
+        options = {}
+    else:
+        data = request.get_json(force=True, silent=True) or {}
+        text = data.get("text", "") or ""
+        options = data.get("options", {}) or {}
+    from app.markdown_fix import fix_markdown
+    fixed = fix_markdown(text, options)
+    return jsonify({"text": fixed})
+
+
 @bp.route("/import_md", methods=["POST"])
 def import_markdown():
     """从 Markdown 文本批量导入 (前端粘贴或上传 .md)
     规则: 一级标题 # 作为分卡标志; 若只有一段则作为单卡
+    可通过 ?fix=1 在导入前先做粘贴格式修正。
     """
     if request.files.get("file"):
         text = request.files["file"].read().decode("utf-8")
     else:
         text = (request.get_data(as_text=True) or "")
+
+    # ?fix=1 时先做粘贴格式修正 (安全子集, 见 app/markdown_fix)
+    do_fix = request.args.get("fix") == "1"
+    if not do_fix:
+        try:
+            do_fix = bool((request.get_json(force=True, silent=True) or {}).get("fix"))
+        except Exception:
+            do_fix = False
+    if do_fix:
+        from app.markdown_fix import fix_markdown
+        text = fix_markdown(text)
 
     if not text.strip():
         return jsonify({"error": "empty content"}), 400

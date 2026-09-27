@@ -194,7 +194,7 @@ const RecordsTab = {
             <h3 class="font-medium text-sm truncate flex-1">${escapeHtml(it.title)}</h3>
             ${stateBadge(it.state)}
           </div>
-          ${it.content_md ? `<div class="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-1">${escapeHtml(truncate(it.content_md.replace(/[#*`>\-]/g,''), 120))}</div>` : ''}
+          ${it.content_md ? `<div class="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-1">${escapeHtml(truncate(it.content_md.replace(/[#*`>\\-]/g,''), 120))}</div>` : ''}
           <div class="flex items-center gap-1.5 flex-wrap">
             ${tags}
             ${images ? `<div class="flex gap-1 ml-auto">${images}${(it.image_paths.length > 3) ? `<div class="w-12 h-12 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-xs text-slate-500">+${it.image_paths.length - 3}</div>` : ''}</div>` : ''}
@@ -396,7 +396,13 @@ const RecordsTab = {
         <div>
           <div class="flex items-center justify-between mb-1">
             <label class="block text-xs text-slate-400">Markdown 内容</label>
-            <button id="edPreviewBtn" class="text-xs text-brand-600 hover:underline">预览</button>
+            <div class="flex items-center gap-3">
+              <label class="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer" title="粘贴时自动修正格式 (去空行 / 项目符号 / LaTeX 公式等)">
+                <input id="edAutoFormat" type="checkbox" class="w-3.5 h-3.5 accent-brand-600" checked> 粘贴自动修正
+              </label>
+              <button id="edFixBtn" class="text-xs text-brand-600 hover:underline" type="button">修正格式</button>
+              <button id="edPreviewBtn" class="text-xs text-brand-600 hover:underline">预览</button>
+            </div>
           </div>
           <textarea id="edContent" rows="8" placeholder="支持 Markdown 语法&#10;# 一级标题&#10;**加粗** *斜体*&#10;- 列表项&#10;\`code\`" class="w-full px-3 py-2 text-sm font-mono border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 resize-y"></textarea>
         </div>
@@ -487,7 +493,7 @@ const RecordsTab = {
       res.urls.forEach(u => imagePaths.push(u));
       renderImageList();
     };
-    // 粘贴上传
+    // 粘贴处理: 图片走上传, 纯文本可选自动格式修正
     document.getElementById('edContent').addEventListener('paste', async (e) => {
       const items = e.clipboardData?.items || [];
       const files = [];
@@ -497,20 +503,44 @@ const RecordsTab = {
           if (f) files.push(f);
         }
       }
-      if (files.length === 0) return;
-      e.preventDefault();
-      const fd = new FormData();
-      files.forEach(f => fd.append('images', f));
-      const res = await api('/api/records/upload_image', { method: 'POST', body: fd });
-      res.urls.forEach(u => imagePaths.push(u));
-      renderImageList();
-      // 同时插入 markdown 引用
-      const ta = e.target;
-      const ins = res.urls.map(u => `![](${u})`).join('\n');
-      const start = ta.selectionStart;
-      ta.value = ta.value.slice(0, start) + ins + '\n' + ta.value.slice(start);
-      ta.selectionStart = ta.selectionEnd = start + ins.length + 1;
+      if (files.length > 0) {
+        e.preventDefault();
+        const fd = new FormData();
+        files.forEach(f => fd.append('images', f));
+        const res = await api('/api/records/upload_image', { method: 'POST', body: fd });
+        res.urls.forEach(u => imagePaths.push(u));
+        renderImageList();
+        // 同时插入 markdown 引用
+        const ta = e.target;
+        const ins = res.urls.map(u => `![](${u})`).join('\n');
+        const start = ta.selectionStart;
+        ta.value = ta.value.slice(0, start) + ins + '\n' + ta.value.slice(start);
+        ta.selectionStart = ta.selectionEnd = start + ins.length + 1;
+        return;
+      }
+      // 纯文本粘贴: 若开启自动修正, 经后端规整后再插入
+      const autoFmt = document.getElementById('edAutoFormat')?.checked;
+      if (autoFmt) {
+        const clip = e.clipboardData?.getData('text');
+        if (clip != null) {
+          e.preventDefault();
+          const formatted = await formatMarkdownText(clip, {});
+          insertAtCursor(e.target, formatted);
+        }
+      }
     });
+
+    // 一键修正当前文本域格式
+    const edFixBtn = document.getElementById('edFixBtn');
+    edFixBtn.onclick = async () => {
+      const ta = document.getElementById('edContent');
+      edFixBtn.textContent = '修正中…';
+      edFixBtn.disabled = true;
+      ta.value = await formatMarkdownText(ta.value, {});
+      edFixBtn.textContent = '修正格式';
+      edFixBtn.disabled = false;
+      toast('已修正格式', 'success');
+    };
 
     // 预览切换
     document.getElementById('edPreviewBtn').onclick = () => {
@@ -577,7 +607,15 @@ const RecordsTab = {
           <input id="impFile" type="file" accept=".md,.markdown,.txt" class="text-sm">
         </div>
         <div>
-          <label class="block text-xs text-slate-400 mb-1">或直接粘贴 Markdown</label>
+          <div class="flex items-center justify-between mb-1">
+            <label class="block text-xs text-slate-400">或直接粘贴 Markdown</label>
+            <div class="flex items-center gap-3">
+              <label class="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer" title="粘贴 / 导入时自动修正格式">
+                <input id="impAutoFormat" type="checkbox" class="w-3.5 h-3.5 accent-brand-600" checked> 自动修正
+              </label>
+              <button id="impFixBtn" class="text-xs text-brand-600 hover:underline" type="button">修正格式</button>
+            </div>
+          </div>
           <textarea id="impText" rows="8" placeholder="# 第一张卡&#10;内容...&#10;&#10;# 第二张卡&#10;内容..." class="w-full px-3 py-2 text-sm font-mono border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 resize-y"></textarea>
         </div>
         <div class="flex justify-end gap-2">
@@ -593,11 +631,28 @@ const RecordsTab = {
       const text = await f.text();
       document.getElementById('impText').value = text;
     };
+    // 粘贴时自动修正
+    const impText = document.getElementById('impText');
+    bindPasteFormat(impText, () => ({
+      enabled: document.getElementById('impAutoFormat')?.checked,
+      options: {},
+    }));
+    // 一键修正
+    const impFixBtn = document.getElementById('impFixBtn');
+    impFixBtn.onclick = async () => {
+      impFixBtn.textContent = '修正中…';
+      impFixBtn.disabled = true;
+      impText.value = await formatMarkdownText(impText.value, {});
+      impFixBtn.textContent = '修正格式';
+      impFixBtn.disabled = false;
+      toast('已修正格式', 'success');
+    };
     document.getElementById('impBtn').onclick = async () => {
       const text = document.getElementById('impText').value;
       if (!text.trim()) { toast('请输入或上传内容', 'error'); return; }
+      const fix = document.getElementById('impAutoFormat')?.checked ? '1' : '0';
       try {
-        const res = await fetch('/api/records/import_md', {
+        const res = await fetch(`/api/records/import_md?fix=${fix}`, {
           method: 'POST',
           headers: { 'Content-Type': 'text/plain' },
           body: text,
