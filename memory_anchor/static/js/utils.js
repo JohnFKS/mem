@@ -124,8 +124,27 @@ function renderMarkdown(text) {
 
     // 4) 还原公式 -> KaTeX 生成的 HTML
     html = html.replace(/\uE000M(\d+)\uE001/g, (m, i) => mathStore[+i]);
-    // 5) 还原代码 -> 转义后的原文本 (等宽展示)
-    html = html.replace(/\uE000C(\d+)\uE001/g, (m, i) => `<code class="hljs">${escapeHtml(codeStore[+i])}</code>`);
+    // 5) 还原代码 -> 围栏代码渲染为 <pre><code> (带 hljs 高亮), 行内代码渲染为 <code>
+    html = html.replace(/\uE000C(\d+)\uE001/g, (m, i) => {
+      const raw = codeStore[+i] || '';
+      // 围栏代码块: ```lang\n...\n```  或 ~~~
+      const fence = raw.match(/^(?:```|~~~)([^\n]*)\n([\s\S]*?)\n?(?:```|~~~)$/);
+      if (fence) {
+        const lang = (fence[1] || '').trim();
+        const code = fence[2];
+        let inner;
+        if (lang && window.hljs && hljs.getLanguage && hljs.getLanguage(lang)) {
+          try { inner = hljs.highlight(code, { language: lang }).value; }
+          catch (e) { inner = escapeHtml(code); }
+        } else {
+          inner = escapeHtml(code);
+        }
+        return `<pre><code class="hljs${lang ? ' language-' + escapeHtml(lang) : ''}">${inner}</code></pre>`;
+      }
+      // 行内代码 `code`
+      const inline = raw.replace(/^`|`$/g, '');
+      return `<code class="hljs">${escapeHtml(inline)}</code>`;
+    });
     return html;
   } catch (e) {
     console.error('renderMarkdown 失败:', e);

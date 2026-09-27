@@ -46,7 +46,9 @@ async function openAnnotationDrawer(recordId, prefillQuote = '', editAnno = null
   initMarkdownEditor('an');
 
   async function refreshList() {
-    const anns = await api(`/api/records/${recordId}/annotations`).catch(() => []);
+    // 后端返回 {items: [...], total: N}
+    const res = await api(`/api/records/${recordId}/annotations`).catch(() => null);
+    const anns = (res && res.items) || [];
     countEl.textContent = anns.length;
     listEl.innerHTML = anns.length
       ? anns.map(annoListItem).join('')
@@ -125,7 +127,9 @@ document.addEventListener('click', async (e) => {
       // 刷新当前能找到的批注列表 (详情页 or 批注抽屉)
       const listEl = document.getElementById('anList');
       if (listEl) {
-        const anns = await api(`/api/records/${rid}/annotations`).catch(() => []);
+        // 后端返回 {items: [...], total: N}
+        const res = await api(`/api/records/${rid}/annotations`).catch(() => null);
+        const anns = (res && res.items) || [];
         document.getElementById('anCount').textContent = anns.length;
         listEl.innerHTML = anns.length ? anns.map(annoListItem).join('') : '<p class="text-xs text-slate-400">暂无批注</p>';
       }
@@ -137,41 +141,79 @@ document.addEventListener('click', async (e) => {
 // ==================== 正文内联高亮 + 悬浮 ====================
 // 把批注按"引用内容"在正文 DOM 的所有文本节点中高亮 (相同内容多处都会显示)
 function applyAnnotations(el, annotations) {
-  if (!el || !annotations || !annotations.length) return;
+  if (!el) return;
+  // 兼容后端 {items: [...], total: N} 与直接数组两种形态
+  let list = annotations;
+  if (list && !Array.isArray(list) && Array.isArray(list.items)) list = list.items;
+  if (!list || !list.length) return;
   window.__annoNotes = window.__annoNotes || {};
-  // 先收集当前所有文本节点
-  const textNodes = [];
-  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
-  let n;
-  while ((n = walker.nextNode())) {
-    // 跳过已在高亮 span 内的文本 (避免重复处理)
-    if (n.parentNode && n.parentNode.classList && n.parentNode.classList.contains('anno-hl')) continue;
-    if (n.nodeValue && n.nodeValue.trim()) textNodes.push(n);
-  }
-  annotations.forEach(a => {
+  list.forEach(a => {
     if (!a.quote) return; // 整卡批注不高亮
     window.__annoNotes[a.id] = renderMarkdown(a.note_md || '');
-    const q = a.quote;
-    textNodes.forEach(tn => {
-      let pos = tn.nodeValue.indexOf(q);
-      if (pos === -1) return;
-      const frag = document.createDocumentFragment();
-      let rest = tn.nodeValue;
-      let from = 0;
-      while ((pos = rest.indexOf(q)) !== -1) {
-        if (pos > 0) frag.appendChild(document.createTextNode(rest.slice(0, pos)));
-        const span = document.createElement('span');
-        span.className = 'anno-hl';
-        span.dataset.aid = a.id;
-        span.textContent = q;
-        frag.appendChild(span);
-        from += pos + q.length;
-        rest = rest.slice(pos + q.length);
-      }
-      if (rest) frag.appendChild(document.createTextNode(rest));
-      tn.parentNode.replaceChild(frag, tn);
-    });
+    highlightQuote(el, a.quote, a.id);
   });
+}
+
+// 在容器内高亮某段引用的**所有出现位置**。
+// 关键点: 不是"在单个文本节点里找", 而是先把容器内所有文本拼成一条字符串定位,
+// 再用 Range 跨元素包裹。这样即使引用跨越多个元素 (例如 hljs 给代码加的 <span>),
+// 或者同一段文字在正文里出现多处, 也都能正确高亮。
+function highlightQuote(root, quote, aid) {
+  if (!root || !quote) return;
+  // 1) 收集文本节点, 并记录它们在整个容器文本中的字符区间
+  const nodes = [];
+  const parts = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+  let n, acc = 0;
+  while ((n = walker.nextNode())) {
+    // 跳过已经高亮过的文本, 避免重复包裹
+    if (n.parentNode && n.parentNode.classList && n.parentNode.classList.contains('anno-hl')) continue;
+    const v = n.nodeValue || '';
+    nodes.push({ node: n, start: acc, end: acc + v.length });
+    parts.push(v);
+    acc += v.length;
+  }
+  if (!nodes.length) return;
+  const text = parts.join('');
+
+  // 2) 找出所有出现位置
+  const ranges = [];
+  let from = 0, idx;
+  while ((idx = text.indexOf(quote, from)) !== -1) {
+    ranges.push([idx, idx + quote.length]);
+    from = idx + quote.length;
+  }
+  if (!ranges.length) return;
+
+  // 3) 字符偏移 -> (文本节点, 节点内偏移)
+  function locate(pos) {
+    for (let i = 0; i < nodes.length; i++) {
+      const x = nodes[i];
+      if (pos >= x.start && pos <= x.end) return { node: x.node, offset: pos - x.start };
+    }
+    return null;
+  }
+
+  // 4) 逆序处理, 避免前面的偏移因 DOM 变动而失效
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    const s = locate(ranges[i][0]);
+    const e = locate(ranges[i][1]);
+    if (!s || !e) continue;
+    try {
+      const range = document.createRange();
+      range.setStart(s.node, s.offset);
+      range.setEnd(e.node, e.offset);
+      const frag = range.extractContents();
+      if (!frag.textContent) continue;
+      const span = document.createElement('span');
+      span.className = 'anno-hl';
+      span.dataset.aid = aid;
+      span.appendChild(frag);
+      range.insertNode(span);
+    } catch (err) {
+      // 极端情况无法包裹时跳过, 不影响其余高亮
+    }
+  }
 }
 
 // 悬浮显示批注笔记 (全局, 初始化一次)

@@ -213,7 +213,9 @@ const ReviewTab = {
     const el = document.getElementById('reviewMdBody');
     if (!el) return;
     try {
-      const anns = await api(`/api/records/${cardId}/annotations`);
+      // 注意: 后端返回 {items: [...], total: N}, 要取 items
+      const res = await api(`/api/records/${cardId}/annotations`);
+      const anns = (res && res.items) || [];
       applyAnnotations(el, anns);
       initAnnotationContextMenu(el, cardId);
     } catch (e) {}
