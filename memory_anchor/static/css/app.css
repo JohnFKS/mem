@@ -158,17 +158,27 @@ input:focus, textarea:focus, select:focus {
 .md-content img { max-width: 100%; height: auto; }
 
 /* ============ 批注 (Annotation) ============ */
-/* 正文内被批注引用的片段: 视觉差异化高亮 */
+/* 正文内被批注引用的片段: 视觉差异化高亮。
+   关键: 高亮必须是"半透明荧光笔"而非不透明色块, 且不覆盖文字颜色 (color: inherit)。
+   否则遇到代码块这种"近黑底 + 白字"的场景, 不透明浅黄会让白字彻底看不见。 */
 .anno-hl {
-  background: #fef9c3;
-  border-bottom: 2px solid rgb(245 158 11);
+  background: rgba(250, 204, 21, 0.30);
+  border-bottom: 2px solid rgba(245, 158, 11, 0.95);
   border-radius: 2px;
   cursor: help;
   padding: 0 1px;
+  color: inherit;   /* 保留原有文字颜色, 不牺牲对比度 */
 }
 .dark .anno-hl {
-  background: rgba(245, 158, 11, 0.22);
-  border-bottom-color: rgb(251 191 36);
+  background: rgba(250, 204, 21, 0.26);
+  border-bottom-color: rgba(251, 191, 36, 0.95);
+}
+/* 代码块内: 背景恒为近黑, 用更低透明度 (0.18) + 更亮描边。
+   实测 alpha=0.22 时最暗的 token(注释 #8b949e) 对比度仅 3.45:1;
+   降到 0.18 后浅色代码 9.64:1、注释 token ~3.9:1, 兼顾"看得出被批注"与"看得清代码" */
+.md-body pre .anno-hl {
+  background: rgba(250, 204, 21, 0.18);
+  border-bottom-color: rgba(250, 204, 21, 0.95);
 }
 
 /* 悬浮显示批注笔记的浮层 */
