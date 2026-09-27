@@ -330,3 +330,135 @@ function bindPasteFormat(textarea, getOptions) {
     insertAtCursor(e.target, formatted);
   });
 }
+
+// ==================== 可复用 Markdown 编辑器组件 ====================
+// buildMarkdownEditor: 构建可复用的 Markdown 编辑器 HTML + 初始化逻辑
+// 参数 options: { 
+//   prefix: ID 前缀 (必填, 避免多实例冲突)
+//   showQuote: 是否显示引用框 (批注专用, 默认 false)
+//   placeholder: 文本域占位符
+//   rows: 文本域行数 (默认 8)
+//   label: 编辑器标签文本 (默认 'Markdown 内容')
+//   quoteLabel: 引用框标签 (默认 '引用片段')
+//   quotePlaceholder: 引用框占位符
+//   formatDefaults: 格式选项默认值对象 {optionName: bool}
+// }
+// 返回值: { html: HTML字符串, init: 初始化函数(container), getValue: 获取值函数, setValue: 设置值函数 }
+function buildMarkdownEditor(options = {}) {
+  const {
+    prefix,
+    showQuote = false,
+    placeholder = '支持 Markdown 语法\n# 一级标题\n**加粗** *斜体*\n- 列表项\n`code`',
+    rows = 8,
+    label = 'Markdown 内容',
+    quoteLabel = '引用片段',
+    quotePlaceholder = '选中的原文片段(可空 = 整卡批注)',
+    formatDefaults = {}
+  } = options;
+
+  if (!prefix) throw new Error('buildMarkdownEditor: prefix is required');
+
+  const contentId = `${prefix}_content`;
+  const autoFormatId = `${prefix}_autoFormat`;
+  const fixBtnId = `${prefix}_fixBtn`;
+  const previewBtnId = `${prefix}_previewBtn`;
+  const quoteId = `${prefix}_quote`;
+
+  // 生成 HTML
+  const quoteHtml = showQuote ? `
+    <div>
+      <label class="block text-xs text-slate-400 mb-1">${quoteLabel}</label>
+      <textarea id="${quoteId}" rows="2" placeholder="${quotePlaceholder}" class="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 resize-y"></textarea>
+    </div>` : '';
+
+  const html = `
+    ${quoteHtml}
+    <div>
+      <div class="flex items-center justify-between mb-1">
+        <label class="block text-xs text-slate-400">${label}</label>
+        <div class="flex items-center gap-3">
+          <label class="flex items-center gap-1.5 text-xs text-slate-500 cursor-pointer" title="粘贴时自动修正格式(去空行 / 项目符号 / LaTeX 公式等)">
+            <input id="${autoFormatId}" type="checkbox" class="w-3.5 h-3.5 accent-brand-600" checked> 粘贴自动修正
+          </label>
+          <button id="${fixBtnId}" class="text-xs text-brand-600 hover:underline" type="button">修正格式</button>
+          <button id="${previewBtnId}" class="text-xs text-brand-600 hover:underline">预览</button>
+        </div>
+      </div>
+      <textarea id="${contentId}" rows="${rows}" placeholder="${placeholder}" class="w-full px-3 py-2 text-sm font-mono border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 resize-y"></textarea>
+      ${formatOptionsPanel(prefix, formatDefaults)}
+    </div>
+  `;
+
+  // 初始化函数: 绑定事件、粘贴处理、预览切换
+  function init(container) {
+    const contentEl = document.getElementById(contentId);
+    const fixBtn = document.getElementById(fixBtnId);
+    const previewBtn = document.getElementById(previewBtnId);
+
+    if (!contentEl) {
+      console.error(`buildMarkdownEditor.init: ${contentId} not found`);
+      return;
+    }
+
+    // 绑定粘贴格式修正
+    bindPasteFormat(contentEl, () => ({
+      enabled: document.getElementById(autoFormatId)?.checked,
+      options: readFormatOpts(prefix)
+    }));
+
+    // 一键修正格式
+    fixBtn.onclick = async () => {
+      fixBtn.textContent = '修正中...';
+      fixBtn.disabled = true;
+      contentEl.value = await formatMarkdownText(contentEl.value, readFormatOpts(prefix));
+      fixBtn.textContent = '修正格式';
+      fixBtn.disabled = false;
+      toast('已修正格式', 'success');
+    };
+
+    // 预览切换
+    previewBtn.onclick = () => {
+      if (contentEl.dataset.preview === '1') {
+        contentEl.dataset.preview = '0';
+        contentEl.style.display = '';
+        contentEl.value = contentEl.dataset.raw || contentEl.value;
+        previewBtn.textContent = '预览';
+        const wrap = document.getElementById(`${contentId}_previewWrap`);
+        if (wrap) wrap.remove();
+      } else {
+        contentEl.dataset.preview = '1';
+        contentEl.dataset.raw = contentEl.value;
+        contentEl.style.display = 'none';
+        const wrap = document.createElement('div');
+        wrap.className = 'md-body w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 min-h-[8rem]';
+        wrap.id = `${contentId}_previewWrap`;
+        wrap.innerHTML = renderMarkdown(contentEl.value);
+        contentEl.parentNode.insertBefore(wrap, contentEl);
+        previewBtn.textContent = '编辑';
+      }
+    };
+  }
+
+  // 获取值函数
+  function getValue() {
+    const obj = { content_md: document.getElementById(contentId)?.value || '' };
+    if (showQuote) {
+      obj.quote = document.getElementById(quoteId)?.value || '';
+    }
+    return obj;
+  }
+
+  // 设置值函数
+  function setValue(data) {
+    const contentEl = document.getElementById(contentId);
+    if (contentEl && data.content_md != null) {
+      contentEl.value = data.content_md;
+    }
+    if (showQuote && data.quote != null) {
+      const quoteEl = document.getElementById(quoteId);
+      if (quoteEl) quoteEl.value = data.quote;
+    }
+  }
+
+  return { html, init, getValue, setValue };
+}

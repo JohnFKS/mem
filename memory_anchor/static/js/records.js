@@ -340,6 +340,9 @@ const RecordsTab = {
   async showDetail(id) {
     try {
       const it = await api(`/api/records/${id}`);
+      const annsRes = await api(`/api/annotations/record/${id}`);
+      const annotations = annsRes.items || [];
+
       const tags = (it.tags || []).map(t => `<span class="badge bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">#${escapeHtml(t)}</span>`).join('');
       const images = (it.image_paths || []).map(p => `<img src="${p}" class="w-full rounded-lg border border-slate-200 dark:border-slate-700 cursor-pointer" onclick="window.open('${p}','_blank')">`).join('<div class="h-2"></div>');
       const logs = (it.review_logs || []).slice(0, 20).map(l => {
@@ -353,6 +356,20 @@ const RecordsTab = {
           <td class="py-1.5 px-2 text-xs text-slate-500">S:${l.stability_after.toFixed(1)} D:${l.difficulty_after.toFixed(1)}</td>
         </tr>`;
       }).join('');
+
+      const annsHtml = annotations.map(ann => `
+        <div class="p-3 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
+          ${ann.quote ? `<div class="text-xs text-slate-500 italic border-l-2 border-slate-300 dark:border-slate-600 pl-2">"${escapeHtml(ann.quote)}"</div>` : ''}
+          <div class="md-body text-sm">${renderMarkdown(ann.note_md)}</div>
+          <div class="flex items-center gap-2 text-[10px] text-slate-400">
+            <span>${tsToDateTime(ann.created_at)}</span>
+            <div class="ml-auto flex gap-1">
+              <button class="text-brand-600 hover:underline" onclick="RecordsTab.editAnnotation(${ann.id}, ${id})">编辑</button>
+              <button class="text-red-600 hover:underline" onclick="RecordsTab.deleteAnnotation(${ann.id}, ${id})">删除</button>
+            </div>
+          </div>
+        </div>
+      `).join('');
 
       const content = `
         <div class="p-5 space-y-4">
@@ -379,9 +396,9 @@ const RecordsTab = {
             <div class="bg-slate-50 dark:bg-slate-800/50 rounded p-2"><div class="text-slate-400">难度</div><div class="font-medium">${it.difficulty.toFixed(2)} / 10</div></div>
           </div>
           ${it.content_md ? `
-            <div>
+            <div id="detailContent">
               <div class="text-xs text-slate-400 mb-1">Markdown 内容</div>
-              <div class="md-body p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg">${renderMarkdown(it.content_md)}</div>
+              <div class="md-body p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg select-text">${renderMarkdown(it.content_md)}</div>
             </div>` : ''}
           ${images ? `
             <div>
@@ -389,6 +406,13 @@ const RecordsTab = {
               <div class="space-y-2">${images}</div>
             </div>` : ''}
           ${it.note ? `<div><div class="text-xs text-slate-400 mb-1">备注</div><div class="text-sm p-3 bg-amber-50 dark:bg-amber-900/20 rounded-lg">${escapeHtml(it.note)}</div></div>` : ''}
+          <div>
+            <div class="flex items-center justify-between mb-2">
+              <div class="text-xs text-slate-400">批注 (${annotations.length})</div>
+              <button class="btn btn-outline text-xs" onclick="RecordsTab.addAnnotation(${id})">+ 新增批注</button>
+            </div>
+            <div class="space-y-2">${annsHtml || '<div class="text-xs text-slate-400 text-center py-4">暂无批注</div>'}</div>
+          </div>
           ${logs ? `
             <div>
               <div class="text-xs text-slate-400 mb-1">复习历史 (最近 ${Math.min(it.review_logs.length, 20)} 次)</div>
@@ -404,9 +428,133 @@ const RecordsTab = {
         </div>
       `;
       openDrawer(it.title, content, { width: '640px' });
+
+      // 绑定文本选中事件用于快捷批注
+      setTimeout(() => {
+        const detailContent = document.getElementById('detailContent');
+        if (detailContent) {
+          detailContent.addEventListener('mouseup', () => {
+            const selection = window.getSelection();
+            const selectedText = selection.toString().trim();
+            if (selectedText) {
+              RecordsTab.addAnnotation(id, selectedText);
+            }
+          });
+        }
+      }, 100);
     } catch (e) {
       toast('加载详情失败: ' + e.message, 'error');
     }
+  },
+
+  // ============ 批注功能 ============
+  addAnnotation(recordId, selectedQuote = '') {
+    const editor = buildMarkdownEditor({
+      prefix: 'ann',
+      showQuote: true,
+      rows: 5,
+      label: '批注笔记',
+      quoteLabel: '引用片段',
+      quotePlaceholder: '选中的原文片段 (可空 = 整卡批注)'
+    });
+
+    const content = `
+      <div class="p-5 space-y-3">
+        ${editor.html}
+        <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+          <button class="btn btn-outline" onclick="closeDrawer()">取消</button>
+          <button id="annSaveBtn" class="btn btn-primary">保存</button>
+        </div>
+      </div>
+    `;
+    openDrawer('新增批注', content, { width: '560px' });
+    setTimeout(() => {
+      editor.init();
+      if (selectedQuote) {
+        editor.setValue({ quote: selectedQuote, content_md: '' });
+      }
+      document.getElementById('annSaveBtn').onclick = async () => {
+        const data = editor.getValue();
+        if (!data.content_md.trim()) {
+          toast('请输入批注内容', 'error');
+          return;
+        }
+        try {
+          await api('/api/annotations', {
+            method: 'POST',
+            body: { record_id: recordId, quote: data.quote, note_md: data.content_md }
+          });
+          toast('批注已保存', 'success');
+          closeDrawer();
+          this.showDetail(recordId);
+        } catch (e) {
+          toast('保存失败: ' + e.message, 'error');
+        }
+      };
+    }, 100);
+  },
+
+  async editAnnotation(annId, recordId) {
+    try {
+      const annsRes = await api(`/api/annotations/record/${recordId}`);
+      const ann = (annsRes.items || []).find(a => a.id === annId);
+      if (!ann) return;
+
+      const editor = buildMarkdownEditor({
+        prefix: 'ann',
+        showQuote: true,
+        rows: 5,
+        label: '批注笔记',
+        quoteLabel: '引用片段'
+      });
+
+      const content = `
+        <div class="p-5 space-y-3">
+          ${editor.html}
+          <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+            <button class="btn btn-outline" onclick="closeDrawer()">取消</button>
+            <button id="annSaveBtn" class="btn btn-primary">保存</button>
+          </div>
+        </div>
+      `;
+      openDrawer('编辑批注', content, { width: '560px' });
+      setTimeout(() => {
+        editor.init();
+        editor.setValue({ quote: ann.quote, content_md: ann.note_md });
+        document.getElementById('annSaveBtn').onclick = async () => {
+          const data = editor.getValue();
+          if (!data.content_md.trim()) {
+            toast('请输入批注内容', 'error');
+            return;
+          }
+          try {
+            await api(`/api/annotations/${annId}`, {
+              method: 'PUT',
+              body: { quote: data.quote, note_md: data.content_md }
+            });
+            toast('已更新', 'success');
+            closeDrawer();
+            this.showDetail(recordId);
+          } catch (e) {
+            toast('更新失败: ' + e.message, 'error');
+          }
+        };
+      }, 100);
+    } catch (e) {
+      toast('加载失败: ' + e.message, 'error');
+    }
+  },
+
+  async deleteAnnotation(annId, recordId) {
+    confirmDialog('确定删除此批注吗?', async () => {
+      try {
+        await api(`/api/annotations/${annId}`, { method: 'DELETE' });
+        toast('已删除', 'success');
+        this.showDetail(recordId);
+      } catch (e) {
+        toast('删除失败: ' + e.message, 'error');
+      }
+    }, { danger: true, okText: '删除' });
   },
 
   // ============ 编辑器 ============

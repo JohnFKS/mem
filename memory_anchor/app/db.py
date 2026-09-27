@@ -89,6 +89,17 @@ CREATE TABLE IF NOT EXISTS backup_log (
     file_size       INTEGER NOT NULL DEFAULT 0,
     note            TEXT NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS annotation (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id       INTEGER NOT NULL,
+    quote           TEXT NOT NULL DEFAULT '',          -- 引用片段 (可空 = 整卡批注)
+    note_md         TEXT NOT NULL DEFAULT '',          -- 批注笔记 (Markdown+公式)
+    created_at      REAL NOT NULL,
+    updated_at      REAL NOT NULL,
+    FOREIGN KEY (record_id) REFERENCES study_record(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_annotation_record ON annotation(record_id);
 """
 
 
