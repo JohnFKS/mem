@@ -64,3 +64,13 @@ data/
 .coverage
 htmlcov/
 .pytest_cache/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# User uploads
+memory_anchor/static/uploads/
+memory_anchor/backups/
+memory_anchor/data/
