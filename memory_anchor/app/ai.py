@@ -3,7 +3,7 @@
 设计原则 (见 TODO.md「AI 三态开关与自动回退」):
 - AI 是**可选**的: 未配置 -> is_configured() 为假, 各端点快速失败 503 ai_not_configured。
 - 调用失败 -> 抛 AIError, 由路由层转成 502, 前端走熔断回退到零 AI 路径。
-- 不引 SDK, 用 requests; **所有调用必须带 timeout** (禁止阻塞超过 15s)。
+- 不引 SDK, 用 requests; **所有调用必须带 timeout**（默认 25s，可用设置项 ai_timeout 调，夹在 5~120）。
 """
 import json
 import logging
@@ -146,8 +146,9 @@ def _classify_exception(e) -> tuple:
                 "（握手阶段直接断开通常是后者）。若是本机自签服务，把 https 换成 http。")
     if any("Timeout" in n for n in names) or isinstance(e, requests.Timeout):
         return ("timeout", f"连接超时：{raw}",
-                "到该地址的网络不通或太慢（常见于直连境外接口）。"
-                "确认浏览器能打开该地址，或改用可直连的中转地址。")
+                "到该地址的网络不通或太慢（常见于直连境外接口），或这次生成本身就慢。"
+                "先把设置页的「超时(秒)」调大（默认 25，最大 120）再试；"
+                "仍然超时就换可直连的中转地址。")
     return ("network", f"网络请求失败：{raw}",
             "网络层异常，不是鉴权问题。按上面的原始报错核对地址与网络环境。")
 
@@ -457,9 +458,15 @@ def _tidy_title(raw: str) -> str:
     t = t.strip('"\'`* ').strip()
     t = t.replace("**", "").replace("`", "")       # 去掉模型爱加的加粗/代码标记
     t = re.sub(r"^(标题|主题)\s*[:：]\s*", "", t)
+    t = re.sub(r"^#+\s*", "", t)                    # 模型偶尔加 markdown 标题标记
     t = t.split("\n")[0].strip()
     if len(t) > MAX_TITLE_LEN:
         t = t[:MAX_TITLE_LEN]
+    if len(t) > 24:
+        # 括号/冒号前通常是正题: "X（Lagrange …）是……" -> "X"
+        m = re.match(r"^(.{3,20}?)[（(【:：]", t)
+        if m and len(m.group(1)) >= 3:
+            t = m.group(1)
     if len(t) > 24:
         # 断在第一个谓语前: "X是微积分中的基本定理之一，……" -> "X"
         m = re.match(r"^(.{4,20}?)(是|指的是|描述了|说明了|揭示了|表明|用于|用来|把|将|即)", t)
