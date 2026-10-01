@@ -131,10 +131,14 @@ const SettingsTab = {
               <label class="block text-xs text-slate-400 mb-1">API Key（不会回显，留空表示保持已保存的值）</label>
               <input id="setAiApiKey" type="password" autocomplete="off" placeholder="sk-…" class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800">
             </div>
-            <div class="grid grid-cols-2 gap-3">
+              <div class="grid grid-cols-3 gap-3">
               <div>
                 <label class="block text-xs text-slate-400 mb-1">模型名（如 gpt-4o-mini）</label>
                 <input id="setAiModel" type="text" placeholder="gpt-4o-mini" class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800">
+              </div>
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">超时（秒，5-120）</label>
+                <input id="setAiTimeout" type="number" min="5" max="120" placeholder="25" class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800">
               </div>
               <div class="flex items-end">
                 <button id="testAiBtn" class="btn btn-outline text-sm">测试连接</button>
@@ -183,6 +187,7 @@ const SettingsTab = {
     // AI 配置: api_key 不回显 (输入框 type=password, 留空保持原值)
     document.getElementById('setAiBaseUrl').value = s.ai_base_url || '';
     document.getElementById('setAiModel').value = s.ai_model || '';
+    document.getElementById('setAiTimeout').value = s.ai_timeout || 25;
   },
 
   // 刷新 AI 状态徽章 (未配置 / 已连接 / 连接失败) + 诊断面板
@@ -279,6 +284,7 @@ const SettingsTab = {
         backup_interval_days: parseInt(document.getElementById('setBackupInterval').value) || 7,
         ai_base_url: document.getElementById('setAiBaseUrl').value.trim(),
         ai_model: document.getElementById('setAiModel').value.trim(),
+        ai_timeout: parseInt(document.getElementById('setAiTimeout').value) || 25,
       };
       // API Key: 留空表示保持已保存的值, 非空才更新
       const key = document.getElementById('setAiApiKey').value;

@@ -25,13 +25,19 @@ def update_settings():
         "daily_target_new", "daily_target_review",
         "quiet_hours_start", "quiet_hours_end",
         # AI 可选增强 (见 app/ai.py): 三个键均非空才算已配置
-        "ai_base_url", "ai_api_key", "ai_model",
+        "ai_base_url", "ai_api_key", "ai_model", "ai_timeout",
     }
     for k, v in data.items():
         if k in allowed:
             # Base URL 落库前先规范化: 去掉误填的 /chat/completions、补协议头
             if k == "ai_base_url" and isinstance(v, str):
                 v, _notes = normalize_base_url(v)
+            # 超时夹在 5~120 秒, 防止填 0 或极大值把请求拖死
+            if k == "ai_timeout":
+                try:
+                    v = max(5, min(120, int(float(v))))
+                except (TypeError, ValueError):
+                    continue
             set_setting(k, v)
     # 应用 request_retention 到 fsrs 单例
     if "request_retention" in data:

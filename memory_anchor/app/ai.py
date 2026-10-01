@@ -14,8 +14,8 @@ import requests
 
 from app.db import get_setting
 
-TIMEOUT_API = 10      # 正常调用
-TIMEOUT_PING = 8      # 连通测试 (中转/海外接口首包常 3~5s, 5s 太紧)
+TIMEOUT_API = 25      # 正常调用 (实测部分中转单次 8~12s, 10s 太紧)
+TIMEOUT_PING = 25     # 连通测试 (同上; 可用设置项 ai_timeout 覆盖)
 MAX_TITLE_LEN = 60
 MAX_MNEMONIC_LEN = 800
 
@@ -267,9 +267,91 @@ def _http_diagnose(status: int, text: str) -> tuple:
     return reason, hint
 
 
+def _timeout(default: float = TIMEOUT_API) -> float:
+    """超时秒数: 设置项 ai_timeout 优先 (默认 25s, 夹在 5~120)。
+
+    实测有的中转/聚合网关单次响应就要 8~12s, 10s 会直接超时失败,
+    所以把默认值放宽并允许用户自己调。
+    """
+    try:
+        v = float(get_setting("ai_timeout") or 0)
+    except (TypeError, ValueError):
+        v = 0
+    if v <= 0:
+        return default
+    return max(5.0, min(120.0, v))
+
+
+def _merge_messages(messages: list) -> list:
+    """把 system 指令并进唯一的 user 消息。
+
+    部分聚合网关/中转不区分 role, 会把 system 当成用户的提问, 于是模型
+    "回复"你的提示词(例如回一句「请提供需要格式化的原始回复文本」),
+    而不是完成任务。合并成单条 user 后, 任何实现都能正确理解。
+    """
+    sys_parts, user_parts = [], []
+    for m in messages or []:
+        role = (m or {}).get("role")
+        content = (m or {}).get("content") or ""
+        if role == "system":
+            sys_parts.append(content)
+        else:
+            user_parts.append(content)
+    head = "\n\n".join(p for p in sys_parts if p.strip())
+    tail = "\n\n".join(p for p in user_parts if p.strip())
+    text = f"{head}\n\n---\n\n{tail}" if head else tail
+    return [{"role": "user", "content": text}]
+
+
+# 模型在"回复指令"而不是"完成任务"时的典型措辞
+_META_REPLY = re.compile(
+    r"(请提供|请给出|请发送|需要提供|原始回复|原始文本|格式化的原始"
+    r"|请问你|请问您|您希望|你希望|我可以帮|我能帮|有什么可以帮"
+    r"|作为.*?(助手|模型).{0,10}(我|无法)"
+    r"|已生成完毕|请告诉我)", re.I)
+
+
+def _looks_like_meta_reply(text: str) -> bool:
+    """返回内容像是在回应我们的提示词, 而不是完成命名/分析任务。"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_META_REPLY.search(t[:200]))
+
+
 def chat(messages: list, max_tokens: int = 200, json_mode: bool = False,
-         timeout: float = TIMEOUT_API, cfg: dict = None) -> str:
-    """调用 /chat/completions, 返回 assistant 的文本内容。失败抛 AIError(带 detail)。"""
+         timeout: float = None, cfg: dict = None, fallback: bool = True) -> str:
+    """调用 /chat/completions, 返回 assistant 的文本内容。失败抛 AIError(带 detail)。
+
+    fallback=True 时: 若拿到的内容像是"模型在回复 system 指令"(部分网关不区分 role),
+    会自动把 system 并进 user 再试一次。
+    """
+    timeout = timeout if timeout else _timeout()
+    try:
+        content = _request_once(messages, max_tokens, json_mode, timeout, cfg)
+    except AIError as e:
+        # 网关不支持 response_format=json_object 时, 去掉它重试一次
+        if json_mode and (e.detail or {}).get("status") == 400:
+            body = (e.detail.get("body") or "") + (e.detail.get("reason") or "")
+            if re.search(r"response_format|json_object|json_schema", body, re.I):
+                logger.warning("response_format 不被支持, 去掉后重试")
+                return _request_once(messages, max_tokens, False, timeout, cfg)
+        raise
+    if fallback and _looks_like_meta_reply(content):
+        logger.warning("返回内容疑似在回复指令(%s)，合并 system 后重试", content[:60])
+        merged = _merge_messages(messages)
+        try:
+            again = _request_once(merged, max_tokens, json_mode, timeout, cfg)
+        except AIError:
+            return content          # 重试失败就用第一次的结果, 不把错误抛上去
+        if again and again.strip():
+            return again
+    return content
+
+
+def _request_once(messages: list, max_tokens: int, json_mode: bool,
+                  timeout: float, cfg: dict = None) -> str:
+    """单次 /chat/completions 请求 + 响应解析 (chat 的编排会调用它一到两次)。"""
     c = cfg or _cfg()
     if not (c["base_url"] and c["api_key"] and c["model"]):
         raise AIError("AI 未配置，功能已关闭",
@@ -376,7 +458,7 @@ def generate_title(content_md: str) -> str:
             {"role": "user", "content": text},
         ],
         max_tokens=50,
-        timeout=TIMEOUT_API,
+        timeout=_timeout(),
     )
     title = (raw or "").strip().strip('"').strip("'").strip("`").strip()
     title = re.sub(r"\s+", " ", title)
@@ -451,7 +533,7 @@ def gap_analysis(standard_md: str, user_summary: str) -> dict:
             {"role": "user",
              "content": f"【标准内容】\n{std}\n\n【学生复述】\n{summ}"},
         ],
-        max_tokens=600, json_mode=True, timeout=TIMEOUT_API,
+        max_tokens=600, json_mode=True, timeout=_timeout(),
     )
     return _parse_gap(raw)
 
@@ -500,7 +582,7 @@ def generate_mnemonic(title: str, content_md: str) -> str:
              "content": f"【卡片标题】\n{head}\n\n【卡片正文】\n{std}"},
         ],
         max_tokens=500,
-        timeout=TIMEOUT_API,
+        timeout=_timeout(),
     )
     text = (raw or "").strip()
     # 兜底清理: 去掉模型偶尔裹上的代码围栏
@@ -522,13 +604,13 @@ def _missing_fields(c: dict) -> list:
     return names
 
 
-def ping(base_url=None, api_key=None, model=None,
-         timeout: float = TIMEOUT_PING) -> dict:
+def ping(base_url=None, api_key=None, model=None, timeout: float = None) -> dict:
     """连通测试, 不抛异常。
 
     返回 {"configured": bool, "ok": bool, "message": str, "detail": dict}。
     detail 含 url / model / status / elapsed_ms / 服务端原文 / 建议, 供前端诊断面板展示。
     """
+    timeout = timeout if timeout else _timeout(TIMEOUT_PING)
     c = _cfg_from(base_url, api_key, model)
     missing = _missing_fields(c)
     if missing:
@@ -542,7 +624,7 @@ def ping(base_url=None, api_key=None, model=None,
     t0 = time.time()
     try:
         chat([{"role": "user", "content": "hi"}], max_tokens=5,
-             timeout=timeout, cfg=c)
+             timeout=timeout, cfg=c, fallback=False)
     except AIError as e:
         detail = dict(e.detail)
         detail.setdefault("elapsed_ms", int((time.time() - t0) * 1000))
