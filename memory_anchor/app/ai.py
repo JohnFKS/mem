@@ -446,6 +446,34 @@ TITLE_SYSTEM = (
 )
 
 
+def _tidy_title(raw: str) -> str:
+    """把模型的回答收拾成一个像样的短标题。
+
+    中转网关常把 `system` 当提问，模型于是无视"10~20 个字"的要求回一整段说明
+    （如"拉格朗日中值定理是微积分中的基本定理之一，它建立了……"）。
+    这里按"谓语/句读"断在完整短语上，而不是硬截在半句话中间。
+    """
+    t = re.sub(r"\s+", " ", (raw or "").strip())
+    t = t.strip('"\'`* ').strip()
+    t = t.replace("**", "").replace("`", "")       # 去掉模型爱加的加粗/代码标记
+    t = re.sub(r"^(标题|主题)\s*[:：]\s*", "", t)
+    t = t.split("\n")[0].strip()
+    if len(t) > MAX_TITLE_LEN:
+        t = t[:MAX_TITLE_LEN]
+    if len(t) > 24:
+        # 断在第一个谓语前: "X是微积分中的基本定理之一，……" -> "X"
+        m = re.match(r"^(.{4,20}?)(是|指的是|描述了|说明了|揭示了|表明|用于|用来|把|将|即)", t)
+        # "这/那/它" 开头的残句不是标题, 不切
+        if m and len(m.group(1)) >= 4 and m.group(1)[0] not in "这那它其该此":
+            t = m.group(1)
+    if len(t) > 24:
+        # 再断在第一个句读处, 至少留 6 个字
+        m = re.match(r"^(.{6,24}?)[。！？!?；;，,]", t)
+        if m:
+            t = m.group(1)
+    return t.strip(" ，,、；;：:。.")
+
+
 def generate_title(content_md: str) -> str:
     """根据正文生成标题。正文过长先截断到 2000 字符。"""
     text = (content_md or "").strip()
@@ -460,8 +488,7 @@ def generate_title(content_md: str) -> str:
         max_tokens=50,
         timeout=_timeout(),
     )
-    title = (raw or "").strip().strip('"').strip("'").strip("`").strip()
-    title = re.sub(r"\s+", " ", title)
+    title = _tidy_title(raw)
     if not title:
         raise AIError("AI 返回空标题")
     return title[:MAX_TITLE_LEN]
