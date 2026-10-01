@@ -604,8 +604,9 @@ Resp: {"id": 42, "title": "..."}     # 400: content_md 为空
 - 后端 `app/ai.py`：
   - `TIMEOUT_API` / `TIMEOUT_PING` 10 → 25；新增设置项 **`ai_timeout`**（夹在 5~120），
     标题/复述对比/速记一律走 `_timeout()`，不再硬编码 `TIMEOUT_API`。
-  - `_looks_like_meta_reply()` + `_merge_messages()`：拿到“元回答”时把 system 折进
-    单条 user（`---` 分隔）再请求一次；第二次仍空则保留首次结果，不吞掉内容。
+  - **提示词一律写进 user 内容**（`chat()` 里发请求前先走 `_merge_messages()`，
+    不再有 system 角色）：实测该网关四种位置返回几乎一致，说明它压根不区分 role；
+    要求放内容末尾时模型最容易照做。仍留有元回答兜底（换种说法再要一次）。
   - `response_format=json_object` 报 400 时自动去掉该字段重试一次（部分网关不支持）。
   - `chat()` 拆成编排层，`_request_once()` 只负责单次请求，重试逻辑集中、可读。
   - `_tidy_title()`：网关把 system 当提问时模型常无视"10~20 个字"，回一整段说明

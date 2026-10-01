@@ -284,11 +284,12 @@ def _timeout(default: float = TIMEOUT_API) -> float:
 
 
 def _merge_messages(messages: list) -> list:
-    """把 system 指令并进唯一的 user 消息。
+    """把提示词(system)直接写进唯一的 user 消息里。
 
-    部分聚合网关/中转不区分 role, 会把 system 当成用户的提问, 于是模型
-    "回复"你的提示词(例如回一句「请提供需要格式化的原始回复文本」),
-    而不是完成任务。合并成单条 user 后, 任何实现都能正确理解。
+    **为什么默认这么做**: 实测不少中转/聚合网关(尤其 gradio 类)根本不区分 role,
+    把整段输入都当成用户的聊天提问。提示词放 system 时它要么不生效、要么被模型
+    "回复"一句(「请提供需要格式化的原始回复文本」)。把要求直接写进内容、
+    且放在末尾(模型对最后几句注意力最高), 任何实现都能读到。
     """
     sys_parts, user_parts = [], []
     for m in messages or []:
@@ -303,7 +304,7 @@ def _merge_messages(messages: list) -> list:
     text = f"{head}\n\n---\n\n{tail}" if head else tail
     # 指令放末尾: 这类网关把整段都当用户提问, 模型更关注最后几句
     text += ("\n\n---\n请严格按上面的要求输出【结果正文】："
-             "只给结果，不要复述要求、不要解释、不要输出代码。")
+             "只给结果本身，不要复述要求、不要解释说明。")
     return [{"role": "user", "content": text}]
 
 
@@ -340,25 +341,29 @@ def chat(messages: list, max_tokens: int = 200, json_mode: bool = False,
          timeout: float = None, cfg: dict = None, fallback: bool = True) -> str:
     """调用 /chat/completions, 返回 assistant 的文本内容。失败抛 AIError(带 detail)。
 
-    fallback=True 时: 若拿到的内容像是"模型在回复 system 指令"(部分网关不区分 role),
-    会自动把 system 并进 user 再试一次。
+    **提示词一律写进 user 内容**(见 _merge_messages), 不再依赖 system 角色——
+    这是为了兼容把整段输入都当聊天提问的网关。
     """
     timeout = timeout if timeout else _timeout()
+    # 有 system 就先并进 user; 之后 messages 里只剩一条 user
+    sent = _merge_messages(messages) if any(
+        (m or {}).get("role") == "system" for m in messages or []) else list(messages or [])
     try:
-        content = _request_once(messages, max_tokens, json_mode, timeout, cfg)
+        content = _request_once(sent, max_tokens, json_mode, timeout, cfg)
     except AIError as e:
         # 网关不支持 response_format=json_object 时, 去掉它重试一次
         if json_mode and (e.detail or {}).get("status") == 400:
             body = (e.detail.get("body") or "") + (e.detail.get("reason") or "")
             if re.search(r"response_format|json_object|json_schema", body, re.I):
                 logger.warning("response_format 不被支持, 去掉后重试")
-                return _request_once(messages, max_tokens, False, timeout, cfg)
+                return _request_once(sent, max_tokens, False, timeout, cfg)
         raise
     if fallback and _looks_like_meta_reply(content):
-        logger.warning("返回内容疑似在回复指令(%s)，合并 system 后重试", content[:60])
-        merged = _merge_messages(messages)
+        logger.warning("返回内容疑似在回复指令(%s)，换一种说法再要一次", content[:60])
+        retry = [{"role": "user",
+                  "content": sent[0]["content"] + "\n\n直接给出结果，不要提问、不要寒暄。"}]
         try:
-            again = _request_once(merged, max_tokens, json_mode, timeout, cfg)
+            again = _request_once(retry, max_tokens, json_mode, timeout, cfg)
         except AIError:
             return content          # 重试失败就用第一次的结果, 不把错误抛上去
         if again and again.strip():
@@ -521,10 +526,13 @@ def generate_title(content_md: str) -> str:
     ]
     raw = chat(messages, max_tokens=50, timeout=_timeout())
     if _looks_like_code(raw):
-        # 网关把卡片当聊天问题回答了(吐了一堆代码), 合并角色再要一次
-        logger.warning("标题返回疑似代码，合并 system 后重试")
-        again = chat(_merge_messages(messages), max_tokens=50,
-                     timeout=_timeout(), fallback=False)
+        # 网关把卡片当聊天问题回答了(吐了一堆代码), 换个说法再要一次
+        logger.warning("标题返回疑似代码，换个说法再要一次")
+        again = chat(
+            [{"role": "user",
+              "content": f"给下面这张学习卡片起一个 10~20 字的中文标题，"
+                         f"只输出标题本身，不要代码、不要讲解、不要举例：\n\n{text}"}],
+            max_tokens=50, timeout=_timeout(), fallback=False)
         if again and not _looks_like_code(again):
             raw = again
     title = _tidy_title(raw)
