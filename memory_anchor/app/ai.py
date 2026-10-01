@@ -334,6 +334,27 @@ def _looks_like_code(text: str) -> bool:
     return bool((text or "").strip()) and bool(_CODE_REPLY.search(text or ""))
 
 
+# 某些模型(尤其 agent 类)会把内部工具调用标记直接吐出来: <|DSML|tool_calls> <invoke ...>
+_TOOLCALL_RE = re.compile(
+    r"<\|[^|\s]{0,30}\|"                       # <|DSML|tool_calls> / </|DSML|>
+    r"|<(?:tool_call|invoke|antml|function_call)[^>]*>"
+    r"|<[｜\uFF5C]DSML[｜\uFF5C]", re.I)
+
+
+def _looks_like_toolcall(text: str) -> bool:
+    return bool((text or "").strip()) and bool(_TOOLCALL_RE.search(text or ""))
+
+
+def _strip_tool_calls(text: str) -> str:
+    """去掉模型吐出来的工具调用块, 只留下正文。"""
+    t = text or ""
+    t = re.sub(r"<\|[^|\s]{0,30}\|.*?(?:</\|[^|\s]{0,30}\|>|$)", "", t, flags=re.S)
+    t = re.sub(r"<(?:tool_call|invoke|antml|function_call)[^>]*>.*?"
+               r"(?:</(?:tool_call|invoke|antml|function_call)>|$)", "", t,
+               flags=re.S | re.I)
+    return t.strip()
+
+
 def _looks_like_meta_reply(text: str) -> bool:
     """返回内容像是在回应我们的提示词, 而不是完成命名/分析任务。"""
     t = (text or "").strip()
@@ -373,7 +394,20 @@ def chat(messages: list, max_tokens: int = 200, json_mode: bool = False,
         except AIError:
             return content
         if full and len(full) > len(content):
-            return full
+            content = full
+    if _looks_like_toolcall(content):
+        # 模型把内部工具调用标记吐出来了: 剥掉; 剥完没内容就换说法再要一次
+        content = _strip_tool_calls(content)
+        if not content.strip() and fallback:
+            logger.warning("返回内容疑似工具调用标记，换种说法再要一次")
+            retry = [{"role": "user",
+                      "content": sent[0]["content"] + "\n\n直接给出结果正文，不要输出任何标记或工具调用。"}]
+            try:
+                again, _ = _request_once(retry, max_tokens, json_mode, timeout, cfg)
+            except AIError:
+                return content
+            if again and again.strip() and not _looks_like_toolcall(again):
+                content = again
     if fallback and _looks_like_meta_reply(content):
         logger.warning("返回内容疑似在回复指令(%s)，换一种说法再要一次", content[:60])
         retry = [{"role": "user",
@@ -512,7 +546,7 @@ def _tidy_title(raw: str) -> str:
     （如"拉格朗日中值定理是微积分中的基本定理之一，它建立了……"）。
     这里按"谓语/句读"断在完整短语上，而不是硬截在半句话中间。
     """
-    t = (raw or "")
+    t = _strip_tool_calls(raw)                      # 模型吐的工具调用标记一律剥掉
     if "```" in t:                                  # 代码块: 只保留前面的话
         t = t.split("```")[0]
     t = re.sub(r"\s+", " ", t.strip())
@@ -562,7 +596,7 @@ def generate_title(content_md: str) -> str:
         {"role": "user", "content": text},
     ]
     raw = chat(messages, max_tokens=80, timeout=_timeout())
-    if _looks_like_code(raw):
+    if _looks_like_code(raw) or not _tidy_title(raw):
         # 网关把卡片当聊天问题回答了(吐了一堆代码), 换个说法再要一次
         logger.warning("标题返回疑似代码，换个说法再要一次")
         again = chat(
