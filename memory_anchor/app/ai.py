@@ -540,7 +540,7 @@ def _clip(text: str, limit: int, ellipsis: bool = True) -> str:
     head = t[:limit]
     cut = 0
     for m in re.finditer(r"[。！？!?；;\n]|，|、| ", head):
-        if m.end() >= limit * 0.6:
+        if m.end() >= limit * 0.3:
             cut = m.end()
     out = head[:cut].rstrip(" ，,、；;：:") if cut else head.rstrip()
     return (out + "…") if ellipsis else out
@@ -565,6 +565,7 @@ def _tidy_title(raw: str) -> str:
     t = re.sub(r"^(?:undefined|null|none|nan)\s*[:：\-—]?\s*", "", t, flags=re.I)
     t = t.split("\n")[0].strip()
     t = re.split(r"#{2,}", t)[0].strip()            # 模型回长文时切掉 markdown 小标题
+    t = re.split(r"\s*-{3,}\s*", t)[0].strip()      # 长文里的 --- 分段, 只留第一段
     if not t or t.lower() in _JUNK_LITERALS:        # 模型偶尔就回一个 "undefined"
         return ""
     if len(t) > MAX_TITLE_LEN:
@@ -587,8 +588,8 @@ def _tidy_title(raw: str) -> str:
         if m and len(m.group(1)) >= 4:
             t = m.group(1)
     if len(t) > 24:
-        # 再断在第一个句读处, 至少留 6 个字
-        m = re.match(r"^(.{6,24}?)[。！？!?；;，,]", t)
+        # 再断在第一个句读/空格处, 至少留 6 个字 (长句放宽到 40 字内)
+        m = re.match(r"^(.{6,40}?)[。！？!?；;，, ]", t)
         if m:
             t = m.group(1)
     t = t.strip(" ，,、；;：:。.")
