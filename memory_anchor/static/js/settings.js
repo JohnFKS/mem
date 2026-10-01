@@ -140,6 +140,7 @@ const SettingsTab = {
                 <button id="testAiBtn" class="btn btn-outline text-sm">测试连接</button>
               </div>
             </div>
+            <div id="aiDiag" style="display:none"></div>
           </div>
         </div>
 
@@ -184,11 +185,15 @@ const SettingsTab = {
     document.getElementById('setAiModel').value = s.ai_model || '';
   },
 
-  // 刷新 AI 状态徽章 (未配置 / 已连接 / 连接失败)
+  // 刷新 AI 状态徽章 (未配置 / 已连接 / 连接失败) + 诊断面板
   async refreshAiBadge(ping) {
     const st = await refreshAiState({ ping: !!ping });
+    this.paintAiBadge(st, ping);
+    return st;
+  },
+
+  paintAiBadge(st, ping) {
     const badge = document.getElementById('aiStatusBadge');
-    if (!badge) return st;
     let text = '未配置，AI 已关闭', cls = 'bg-slate-100 dark:bg-slate-700 text-slate-500';
     if (st.configured && st.disabled) {
       text = '已配置但连接失败'; cls = 'bg-red-100 dark:bg-red-900/30 text-red-600';
@@ -196,8 +201,16 @@ const SettingsTab = {
       text = ping ? (st.failCount ? '已配置但连接失败' : '已连接') : '已配置';
       cls = 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600';
     }
-    badge.textContent = text;
-    badge.className = `ml-1 text-xs px-2 py-0.5 rounded-full ${cls}`;
+    if (badge) {
+      badge.textContent = text;
+      badge.className = `ml-1 text-xs px-2 py-0.5 rounded-full ${cls}`;
+    }
+    // 失败/未配置时把后端给的原因与建议直接摊开, 不再只显示一行状态
+    const diag = document.getElementById('aiDiag');
+    if (diag) {
+      const ok = st.configured && !st.disabled && st.ping_ok === true;
+      renderAiDiagnostics(diag, ok ? null : st.detail, ok ? '' : st.message);
+    }
     return st;
   },
 
@@ -281,12 +294,29 @@ const SettingsTab = {
       } catch (e) { toast('保存失败: ' + e.message, 'error'); }
     };
     document.getElementById('testAiBtn').onclick = async () => {
+      const btn = document.getElementById('testAiBtn');
+      const old = btn.textContent;
+      btn.disabled = true; btn.textContent = '测试中…';
       try {
-        const st = await this.refreshAiBadge(true);
-        toast(st.configured && !st.disabled ? '连接正常' : (st.configured ? '连接失败，请检查配置' : '尚未配置 AI'),
-              st.configured && !st.disabled ? 'success' : 'error');
+        // 用表单里"还没保存"的值去测, 免得改了 URL 却还在测旧配置
+        const res = await testAiConnection({
+          base_url: document.getElementById('setAiBaseUrl').value.trim(),
+          api_key: document.getElementById('setAiApiKey').value.trim(),   // 空 = 沿用已保存的
+          model: document.getElementById('setAiModel').value.trim(),
+        });
+        this.paintAiBadge(aiState, true);
+        const reason = (res.detail && (res.detail.reason || res.detail.raw)) || res.message || '';
+        if (res.ping_ok) {
+          toast('连接正常（' + ((res.detail && res.detail.elapsed_ms) || 0) + 'ms）', 'success', 3000);
+        } else {
+          toast('连接失败：' + (reason || res.message || '未知原因'), 'error', 6000);
+        }
         syncAiEntries();
-      } catch (e) { toast('检测失败: ' + e.message, 'error'); }
+      } catch (e) {
+        toast('检测失败: ' + e.message, 'error', 6000);
+      } finally {
+        btn.disabled = false; btn.textContent = old;
+      }
     };
     document.getElementById('resetFsrsBtn').onclick = async () => {
       confirmDialog('确定重置 FSRS 参数为默认值? 这不会影响已有卡片的复习进度。', async () => {

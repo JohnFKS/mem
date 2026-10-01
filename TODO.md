@@ -7,11 +7,10 @@
 > 状态：⬜ 未开始 / 🟨 进行中 / ✅ 完成
 >
 > **当前进度**：1–5 ✅ + 第二轮迭代 6.1–6.5 ✅（速记 / 标签筛选 / 题目卡预览 / 答案面复述对比 /
-> MCP 12 工具 / 思源快捕题目卡）。自测：第一轮 204 项 + 本轮 150 项（后端 58 / MCP 39 / 前端 53）
-> 全绿，另有 110 项回归全绿。
-> **已推送 GitHub**：JohnFKS/mem@master — [524aa42](https://github.com/JohnFKS/mem/commit/524aa4239a560f4a2125819541c164cc48ba7c35)
-> （远端 46 个文件与本地逐文件 blob SHA 校验一致）。
-> 公网预览：https://ac.app.workbuddy.host
+> MCP 12 工具 / 思源快捕题目卡）+ 6.6 ✅（AI 连接失败诊断）。自测：第一轮 204 项 + 本轮 150 项
+> （后端 58 / MCP 39 / 前端 53）+ 诊断 70 项（后端 48 / 前端 22）全绿，另有 110 项回归全绿。
+> **已推送 GitHub**：JohnFKS/mem@master（远端 46 个文件与本地逐文件 blob SHA 校验一致）。
+> 公网预览：https://a1730183bef387d8c.app.workbuddy.host
 
 | # | 事项 | 一句话定位 | 状态 |
 |---|------|-----------|------|
@@ -526,6 +525,7 @@ Resp: {"id": 42, "title": "..."}     # 400: content_md 为空
 | 6.3 | 题目卡预览显示题干 | 复习正面渲染题干（否则没法做题）；列表摘要在题干为空时回退显示解答 |
 | 6.4 | 主页按标签筛选 | 标签下拉（带计数）+ 卡片标签徽章点击即筛选 |
 | 6.5 | MCP / 思源快捕同步 | 工具 8 → 12；快捕支持题目卡；插件支持默认类型与「作为题目发送」 |
+| 6.6 | AI 连接失败诊断 | 失败时给出具体原因与改法（DNS/拒绝/超时/TLS/401/403/404/429/5xx/非 JSON），不再只显示「连接失败」 |
 
 ### 6.1 答案面显示复述
 - 点「跳过，直接看答案」/ 按 Space 前先把复述框内容收进 `state.feynman.text`（点卡片空白处也不会丢）。
@@ -568,6 +568,28 @@ Resp: {"id": 42, "title": "..."}     # 400: content_md 为空
 - 思源插件：设置加「默认类型（笔记/题目）」，右键菜单给出两项（默认项 + 相反的"作为题目/笔记发送"），
   提示语在题目卡时提醒去补标准解答；`npm run build` 与 `tsc --noEmit` 均通过。
 
+### 6.6 AI 连接失败诊断
+- 背景：配置好了却连不上时，界面只显示"已配置但连接失败"，后端只有 requests 原始异常串
+  （`HTTPSConnectionPool...Max retries exceeded`），没有任何可照着改的信息。
+- 后端 `app/ai.py`：
+  - `normalize_base_url()`：去掉误填的 `/chat/completions` 尾巴、缺协议头时按"本机/内网 → http，
+    公网 → https"自动补；保存设置时也走同一套规范化。
+  - `_classify_exception()`：沿 `__cause__` 链把异常归类为 dns / refused / timeout / tls / proxy，
+    每类配一句人话原因 + 一条"怎么办"。
+  - `_http_diagnose()`：按状态码给原因与建议，并从 OpenAI 风格错误体里抽出 `error.message`。
+  - `AIError` 带 `detail`（url / model / 掩码 key / status / elapsed_ms / 服务端原文 / 建议），
+    一路透到前端；同时 `logger.warning` 落服务端日志。
+  - `_resp_text()`：强制按 UTF-8 取响应体，避免 requests 对 `text/*` 退 ISO-8859-1 导致中文报错乱码。
+  - `_safe_body()` 打码响应里的 `sk-***`；`_mask_key()` 只回显首尾各 3 位。
+  - 连通测试 `TIMEOUT_PING` 5s → 8s（中转/海外首包常 3~5s，5s 太紧）。
+- 路由：`GET /api/ai/status?ping=1` 返回 `detail`；新增 `POST /api/ai/test`，可带
+  `base_url/api_key/model` 覆盖值**不落库**（改了 URL 不用先保存就能试）。
+  生成类接口（标题/复述对比/速记）的 502 也带 `detail`。
+- 前端：`refreshAiState` 保留 `message/detail`（原来直接丢弃）；新增 `testAiConnection()` 与
+  `renderAiDiagnostics()`，设置页展开诊断面板（请求地址/模型/耗时/状态/服务端原文/建议，可一键复制）；
+  `api()` 抛错保留 `err.data`，`aiFailureMessage()` 优先显示后端给的具体原因；
+  熔断提示改成"去设置页「测试连接」看具体原因"。
+
 ### 自测结果（本轮 145 项）
 | 套件 | 项数 | 覆盖 |
 |---|---|---|
@@ -575,6 +597,8 @@ Resp: {"id": 42, "title": "..."}     # 400: content_md 为空
 | MCP | 39 | 12 工具注册（含真实 stdio 会话）、题目卡建卡、kind 搜索、速记增删查、快捕两种类型、非法评分被拒 |
 | 前端 jsdom | 53 | 复述显示在答案面且位于标准内容之上、未写复述提示、gap 摘要、题目卡正面题干与详情解答/评分点/错因、速记渲染/AI 三态/熔断/保存 source、标签下拉与徽章筛选、💡 角标与摘要回退 |
 | 回归 | 110 | 批注 14 / 待复习列表 38 / 费曼 29 / 错题 29 全绿 |
+| AI 诊断（后端） | 48 | 未配置说清缺哪几项、正常连通、401/403/404/429/500、返回 HTML、DNS、端口拒绝、8s 超时、base_url 两纠错形态、test 不落库、502 带 detail、保存规范化、不泄露 key |
+| AI 诊断（前端） | 22 | message/detail 被保留、诊断面板字段齐全、成功时隐藏、用未保存值测试、toast 取后端原因、连续 2 次熔断提示、err.data.detail 可用 |
 
 ---
 

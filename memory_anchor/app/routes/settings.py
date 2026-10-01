@@ -2,6 +2,7 @@
 import json
 from flask import Blueprint, request, jsonify
 
+from app.ai import normalize_base_url
 from app.db import get_all_settings, set_setting
 from app.fsrs import fsrs, DEFAULT_WEIGHTS, FSRS5
 
@@ -28,6 +29,9 @@ def update_settings():
     }
     for k, v in data.items():
         if k in allowed:
+            # Base URL 落库前先规范化: 去掉误填的 /chat/completions、补协议头
+            if k == "ai_base_url" and isinstance(v, str):
+                v, _notes = normalize_base_url(v)
             set_setting(k, v)
     # 应用 request_retention 到 fsrs 单例
     if "request_retention" in data:

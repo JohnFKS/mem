@@ -147,7 +147,7 @@ async function openMnemonicDrawer(recordId, editItem = null) {
         aiSource = 'ai';
         toast('已生成，可修改后再保存', 'success');
       } catch (e) {
-        const disabled = aiNoteFailure('生成速记失败: ' + e.message);
+        const disabled = aiNoteFailure('生成速记失败', e);
         if (disabled) aiBtn.style.display = 'none';
       } finally {
         aiBtn.disabled = false;

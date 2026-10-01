@@ -644,7 +644,7 @@ const RecordsTab = {
           document.getElementById('edTitle').value = res.title;
           toast('已生成标题', 'success');
         } catch (e) {
-          const disabled = aiNoteFailure('生成标题失败: ' + e.message);
+          const disabled = aiNoteFailure('生成标题失败', e);
           if (disabled) aiTitleBtn.style.display = 'none';
         } finally {
           aiTitleBtn.disabled = false;

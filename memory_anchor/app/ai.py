@@ -6,28 +6,91 @@
 - 不引 SDK, 用 requests; **所有调用必须带 timeout** (禁止阻塞超过 15s)。
 """
 import json
+import logging
 import re
+import time
 
 import requests
 
 from app.db import get_setting
 
 TIMEOUT_API = 10      # 正常调用
-TIMEOUT_PING = 5      # 连通测试
+TIMEOUT_PING = 8      # 连通测试 (中转/海外接口首包常 3~5s, 5s 太紧)
 MAX_TITLE_LEN = 60
 MAX_MNEMONIC_LEN = 800
 
+logger = logging.getLogger(__name__)
+
 
 class AIError(Exception):
-    pass
+    """AI 调用失败。
+
+    detail 里带可直接排查的字段 (url/status/elapsed_ms/服务端原文/建议),
+    会一路透传到前端诊断面板; **绝不包含 api_key**。
+    """
+
+    def __init__(self, message: str, detail: dict = None):
+        super().__init__(message)
+        self.detail = detail or {}
+
+
+# ---- base_url 规范化 ----
+# 最常见的配置错误就是把整条 chat 接口地址贴进来, 或漏写协议头。
+# 这里只做"去掉多余尾巴"的安全改写, 不改语义。
+_BAD_SUFFIXES = ("/chat/completions", "/completions", "/v1/chat/completions")
+
+
+_LOCAL_HOST = re.compile(
+    r"^(localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|10\.\d{1,3}|192\.168\.\d{1,3}"
+    r"|172\.(1[6-9]|2\d|3[01])\.\d{1,3})(:|/|$)", re.I)
+
+
+def _guess_scheme(host_part: str) -> str:
+    """本机/内网默认 http, 公网才默认 https (免得给 localhost 套 TLS 直接失败)。"""
+    return "http" if _LOCAL_HOST.match(host_part or "") else "https"
+
+
+def normalize_base_url(raw: str) -> tuple:
+    """返回 (规范化后的 base_url, 提示列表)。"""
+    u = (raw or "").strip()
+    if not u:
+        return "", []
+    notes = []
+    if not re.match(r"^https?://", u, re.I):
+        scheme = _guess_scheme(u)
+        u = f"{scheme}://{u}"
+        notes.append(f"地址缺少 http(s):// 协议头，已按 {u} 尝试；"
+                     f"如果实际是{'https' if scheme == 'http' else 'http'}，请把协议头写全")
+    u = u.rstrip("/")
+    for suf in _BAD_SUFFIXES:
+        if u.endswith(suf):
+            u = u[: -len(suf)].rstrip("/")
+            notes.append(f"已自动去掉末尾的 {suf}：Base URL 只需填到 /v1 这一级，"
+                         "程序会自己拼 /chat/completions")
+            break
+    return u, notes
 
 
 def _cfg() -> dict:
+    base, notes = normalize_base_url(get_setting("ai_base_url"))
     return {
-        "base_url": str(get_setting("ai_base_url") or "").strip().rstrip("/"),
+        "base_url": base,
         "api_key": str(get_setting("ai_api_key") or "").strip(),
         "model": str(get_setting("ai_model") or "").strip(),
+        "base_notes": notes,
     }
+
+
+def _cfg_from(base_url=None, api_key=None, model=None) -> dict:
+    """用覆盖值构建配置: 测试连接时允许"还没保存就先试"。"""
+    c = _cfg()
+    if base_url is not None:
+        c["base_url"], c["base_notes"] = normalize_base_url(base_url)
+    if api_key is not None:
+        c["api_key"] = str(api_key or "").strip()
+    if model is not None:
+        c["model"] = str(model or "").strip()
+    return c
 
 
 def is_configured() -> bool:
@@ -36,12 +99,134 @@ def is_configured() -> bool:
     return bool(c["base_url"] and c["api_key"] and c["model"])
 
 
+def _mask_key(key: str) -> str:
+    """只留首尾各 3 位, 用于日志/回显确认"填的是哪把钥匙"。"""
+    k = (key or "").strip()
+    if len(k) <= 8:
+        return "*" * len(k)
+    return f"{k[:3]}…{k[-3:]}({len(k)}位)"
+
+
+def _short_exc(e) -> str:
+    """把 requests 的超长异常压成一行可诊断的摘要。"""
+    s = str(e) or type(e).__name__
+    s = re.sub(r"\s+", " ", s).strip()
+    # 去掉 urlib3 那串重复的连接池描述, 只留根因
+    m = re.search(r"Caused by ([^)]+\))", s)
+    if m:
+        s = m.group(1)
+    return s[:300]
+
+
+def _classify_exception(e) -> tuple:
+    """把网络层异常翻译成 (kind, 人话原因, 怎么办)。"""
+    names = set()
+    cur = e
+    for _ in range(6):
+        if cur is None:
+            break
+        names.add(type(cur).__name__)
+        cur = cur.__cause__ or cur.__context__
+    raw = _short_exc(e)
+
+    if "NameResolutionError" in names or "gaierror" in names:
+        return ("dns", f"域名解析失败：{raw}",
+                "域名拼错了，或这台机器解析不了该域名。"
+                "本机/内网请直接用 IP；外网域名先确认 DNS 与代理是否可用。")
+    if "ProxyError" in names:
+        return ("proxy", f"代理连接失败：{raw}",
+                "检查 HTTP_PROXY / HTTPS_PROXY 环境变量指向的代理是否活着；"
+                "不需要代理时把它们清掉。")
+    if "ConnectionRefusedError" in names or "NewConnectionError" in names and "refused" in raw.lower():
+        return ("refused", f"连接被拒绝：{raw}",
+                "目标端口上没有服务在监听。检查端口写错没、记忆锚之外的那个 AI 服务是否启动。")
+    if "SSLError" in names or "CertificateError" in names or "ssl" in raw.lower():
+        return ("tls", f"TLS/证书校验失败：{raw}",
+                "域名与证书不匹配、系统根证书过期，或链路被中间设备/代理掐断"
+                "（握手阶段直接断开通常是后者）。若是本机自签服务，把 https 换成 http。")
+    if any("Timeout" in n for n in names) or isinstance(e, requests.Timeout):
+        return ("timeout", f"连接超时：{raw}",
+                "到该地址的网络不通或太慢（常见于直连境外接口）。"
+                "确认浏览器能打开该地址，或改用可直连的中转地址。")
+    return ("network", f"网络请求失败：{raw}",
+            "网络层异常，不是鉴权问题。按上面的原始报错核对地址与网络环境。")
+
+
+# HTTP 状态码 -> (人话原因, 怎么办)
+_HTTP_HINTS = {
+    400: ("请求被拒绝（400）", "多数是模型名不被支持，或该服务不接受某个参数。到服务商控制台核对模型名。"),
+    401: ("鉴权失败（401）", "API Key 填错、过期，或被服务商吊销。重新生成一把 Key 再试。"),
+    403: ("无访问权限（403）", "这把 Key 没开通该模型，或受地区/额度限制。换模型或换 Key。"),
+    404: ("接口不存在（404）", "Base URL 只填到 /v1，末尾不要带 /chat/completions；"
+                              "也可能该服务根本不提供 OpenAI 兼容接口。"),
+    408: ("请求超时（408）", "服务端处理太久。换个更快的模型再试。"),
+    422: ("参数不合法（422）", "请求体被拒，通常是模型名不支持或 max_tokens 超限。"),
+    429: ("限流或余额不足（429）", "触发速率限制，或账户额度用完了。稍后再试/充值。"),
+}
+
+
+def _resp_text(resp) -> str:
+    """按 UTF-8 取响应体。
+
+    requests 对 text/* 且未声明 charset 的响应会退回 ISO-8859-1,
+    中文报错会变成乱码——诊断信息里必须看得懂, 所以强制按 UTF-8 解。
+    """
+    enc = (resp.encoding or "").lower()
+    if enc and enc not in ("iso-8859-1", "latin-1", "ascii"):
+        return resp.text
+    try:
+        return resp.content.decode("utf-8", errors="replace")
+    except (AttributeError, UnicodeError):
+        return resp.text or ""
+
+
+def _safe_body(text: str, limit: int = 400) -> str:
+    """服务端响应片段: 截断 + 抹掉任何看起来像 key 的串。"""
+    s = (text or "").strip()
+    s = re.sub(r"\s+", " ", s)
+    s = re.sub(r"(sk-[A-Za-z0-9_\-]{6,})", "sk-***", s)
+    s = re.sub(r"(Bearer\s+)[A-Za-z0-9_\-\.]{6,}", r"\1***", s)
+    return s[:limit]
+
+
+def _server_error_message(text: str) -> str:
+    """从 OpenAI 风格错误体里抽人类可读的 message。"""
+    try:
+        data = json.loads(text or "")
+    except (ValueError, TypeError):
+        return ""
+    err = data.get("error") if isinstance(data, dict) else None
+    if isinstance(err, dict):
+        return str(err.get("message") or err.get("code") or "")
+    if isinstance(err, str):
+        return err
+    if isinstance(data, dict):
+        return str(data.get("message") or data.get("msg") or "")
+    return ""
+
+
+def _http_diagnose(status: int, text: str) -> tuple:
+    reason, hint = _HTTP_HINTS.get(status, ("", ""))
+    if not reason:
+        if 500 <= status < 600:
+            reason = f"服务端故障（{status}）"
+            hint = "AI 服务商自己报错，与你的配置无关。稍后重试或换节点。"
+        else:
+            reason = f"返回 {status}"
+            hint = "非 200 响应，看下面的服务端原文判断。"
+    server_msg = _server_error_message(text)
+    if server_msg:
+        reason = f"{reason}：{server_msg[:120]}"
+    return reason, hint
+
+
 def chat(messages: list, max_tokens: int = 200, json_mode: bool = False,
-         timeout: float = TIMEOUT_API) -> str:
-    """调用 /chat/completions, 返回 assistant 的文本内容。失败抛 AIError。"""
-    if not is_configured():
-        raise AIError("AI 未配置，功能已关闭")
-    c = _cfg()
+         timeout: float = TIMEOUT_API, cfg: dict = None) -> str:
+    """调用 /chat/completions, 返回 assistant 的文本内容。失败抛 AIError(带 detail)。"""
+    c = cfg or _cfg()
+    if not (c["base_url"] and c["api_key"] and c["model"]):
+        raise AIError("AI 未配置，功能已关闭",
+                      {"kind": "not_configured", "hint": "在设置页填好 Base URL / API Key / 模型名"})
     url = f"{c['base_url']}/chat/completions"
     headers = {
         "Authorization": f"Bearer {c['api_key']}",
@@ -55,17 +240,44 @@ def chat(messages: list, max_tokens: int = 200, json_mode: bool = False,
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+
+    common = {"url": url, "model": c["model"],
+              "key_masked": _mask_key(c["api_key"]),
+              "notes": c.get("base_notes") or []}
+    t0 = time.time()
     try:
         resp = requests.post(url, headers=headers, json=body, timeout=timeout)
     except requests.RequestException as e:
-        raise AIError(f"AI 服务连接失败: {e}")
+        kind, reason, hint = _classify_exception(e)
+        detail = dict(common, kind=kind, reason=reason, hint=hint,
+                      elapsed_ms=int((time.time() - t0) * 1000),
+                      raw=_short_exc(e))
+        logger.warning("AI 调用失败 [%s] %s | %s", kind, reason, detail)
+        raise AIError(f"AI 服务连接失败：{reason}", detail)
+    elapsed = int((time.time() - t0) * 1000)
+
     if resp.status_code != 200:
-        raise AIError(f"AI 服务返回 {resp.status_code}: {resp.text[:200]}")
+        body = _resp_text(resp)
+        reason, hint = _http_diagnose(resp.status_code, body)
+        detail = dict(common, kind="http", reason=reason, hint=hint,
+                      status=resp.status_code, elapsed_ms=elapsed,
+                      body=_safe_body(body))
+        logger.warning("AI 返回非 200 [status=%s] %s | body=%s",
+                       resp.status_code, reason, detail["body"])
+        raise AIError(f"AI 服务{reason}", detail)
+
     try:
         data = resp.json()
         return data["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError) as e:
-        raise AIError(f"AI 响应解析失败: {e}")
+        body = _resp_text(resp)
+        detail = dict(common, kind="parse", elapsed_ms=elapsed,
+                      reason=f"响应不是预期的 OpenAI 结构（{type(e).__name__}）",
+                      hint="接口返回的不是 OpenAI 兼容格式。确认 Base URL 指向的是 /v1，"
+                           "且没有被网关/登录页拦截（响应是不是一段 HTML？）。",
+                      body=_safe_body(body))
+        logger.warning("AI 响应解析失败: %s | body=%s", e, detail["body"])
+        raise AIError("AI 响应解析失败：响应不是 OpenAI 兼容格式", detail)
 
 
 TITLE_SYSTEM = (
@@ -223,13 +435,54 @@ def generate_mnemonic(title: str, content_md: str) -> str:
     return text[:MAX_MNEMONIC_LEN]
 
 
-def ping() -> tuple:
-    """连通测试: (ok: bool, message: str)。不抛异常。"""
-    if not is_configured():
-        return False, "未配置，AI 功能已关闭"
+def _missing_fields(c: dict) -> list:
+    names = []
+    if not c["base_url"]:
+        names.append("Base URL")
+    if not c["api_key"]:
+        names.append("API Key")
+    if not c["model"]:
+        names.append("模型名")
+    return names
+
+
+def ping(base_url=None, api_key=None, model=None,
+         timeout: float = TIMEOUT_PING) -> dict:
+    """连通测试, 不抛异常。
+
+    返回 {"configured": bool, "ok": bool, "message": str, "detail": dict}。
+    detail 含 url / model / status / elapsed_ms / 服务端原文 / 建议, 供前端诊断面板展示。
+    """
+    c = _cfg_from(base_url, api_key, model)
+    missing = _missing_fields(c)
+    if missing:
+        return {
+            "configured": False, "ok": False,
+            "message": "未配置：" + "、".join(missing) + " 为空，AI 功能已关闭",
+            "detail": {"kind": "not_configured", "missing": missing,
+                       "hint": "三项都填齐并保存后才会出现 AI 入口。"},
+        }
+
+    t0 = time.time()
     try:
         chat([{"role": "user", "content": "hi"}], max_tokens=5,
-             timeout=TIMEOUT_PING)
-        return True, "已配置，连接正常"
+             timeout=timeout, cfg=c)
     except AIError as e:
-        return False, str(e)
+        detail = dict(e.detail)
+        detail.setdefault("elapsed_ms", int((time.time() - t0) * 1000))
+        detail.setdefault("hint", "")
+        detail.setdefault("kind", "unknown")
+        detail["url"] = detail.get("url") or f"{c['base_url']}/chat/completions"
+        return {"configured": True, "ok": False, "message": str(e), "detail": detail}
+    return {
+        "configured": True, "ok": True,
+        "message": "已配置，连接正常",
+        "detail": {
+            "kind": "ok",
+            "url": f"{c['base_url']}/chat/completions",
+            "model": c["model"],
+            "key_masked": _mask_key(c["api_key"]),
+            "elapsed_ms": int((time.time() - t0) * 1000),
+            "notes": c["base_notes"],
+        },
+    }

@@ -20,7 +20,11 @@ async function api(path, options = {}) {
     if (ct.includes('application/json')) {
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || `HTTP ${res.status}`);
+        // 保留完整响应体: 后端会在 detail 里给出 AI 失败原因/建议, 前端要能拿到
+        const err = new Error(data.error || `HTTP ${res.status}`);
+        err.data = data;
+        err.status = res.status;
+        throw err;
       }
       return data;
     }
@@ -354,22 +358,103 @@ window.rubricToText = function (rubric) {
 
 // ---------- AI 可选增强: 三态开关与自动回退 (全局共享) ----------
 // 关闭 (未配置) -> AI 入口不渲染; 可用 -> 正常显示; 回退 (连续失败>=2) -> 本会话禁用。
-const aiState = { configured: false, disabled: false, failCount: 0 };
+const aiState = { configured: false, disabled: false, failCount: 0, message: '', detail: null };
 window.aiState = aiState;
 
 // 拉取 AI 配置状态。ping=true 时做一次连通测试 (设置页用)。
+// message / detail 由后端给出可诊断信息, 这里必须留下来给前端展示, 不能丢。
 async function refreshAiState({ ping = false } = {}) {
   try {
     const res = await api(`/api/ai/status${ping ? '?ping=1' : ''}`);
     aiState.configured = !!res.configured;
+    aiState.message = res.message || '';
+    aiState.detail = res.detail || null;
+    aiState.ping_ok = res.ping_ok;
     if (ping && res.ping_ok === false) aiState.disabled = true;
     if (ping && res.ping_ok === true) { aiState.disabled = false; aiState.failCount = 0; }
   } catch (e) {
     aiState.configured = false;
+    aiState.message = e.message || String(e);
+    aiState.detail = null;
   }
   return aiState;
 }
 window.refreshAiState = refreshAiState;
+
+// 用表单里尚未保存的值做一次连通测试 (不需要先保存)
+async function testAiConnection({ base_url, api_key, model } = {}) {
+  const res = await api('/api/ai/test', {
+    method: 'POST',
+    body: { base_url: base_url || '', api_key: api_key || '', model: model || '' },
+  });
+  aiState.configured = !!res.configured;
+  aiState.message = res.message || '';
+  aiState.detail = res.detail || null;
+  aiState.ping_ok = res.ping_ok;
+  if (res.ping_ok === true) { aiState.disabled = false; aiState.failCount = 0; }
+  else if (res.ping_ok === false) aiState.disabled = true;
+  return res;
+}
+window.testAiConnection = testAiConnection;
+
+// 把后端返回的诊断详情渲染成可复制的排查面板
+function renderAiDiagnostics(el, detail, message) {
+  if (!el) return;
+  const d = detail || {};
+  if (!message && !Object.keys(d).length) { el.innerHTML = ''; el.style.display = 'none'; return; }
+  el.style.display = '';
+
+  const rows = [];
+  const add = (k, v, cls) => {
+    if (v === undefined || v === null || v === '') return;
+    rows.push(`<div class="flex gap-2"><span class="shrink-0 text-slate-400 w-20">${k}</span>` +
+      `<span class="${cls || 'text-slate-600 dark:text-slate-300'}">${escapeHtml(String(v))}</span></div>`);
+  };
+  add('请求地址', d.url, 'font-mono text-xs break-all');
+  add('模型', d.model, 'font-mono text-xs');
+  if (d.key_masked) add('Key', d.key_masked, 'font-mono text-xs');
+  if (d.status) add('HTTP', d.status, 'font-mono text-xs');
+  if (d.elapsed_ms !== undefined) add('耗时', d.elapsed_ms + ' ms', 'font-mono text-xs');
+
+  const plain = [
+    message || '',
+    d.reason ? '原因：' + d.reason : '',
+    d.hint ? '建议：' + d.hint : '',
+    (d.notes && d.notes.length) ? '注意：' + d.notes.join('；') : '',
+    d.body ? '服务端原文：' + d.body : '',
+    d.raw ? '原始错误：' + d.raw : '',
+  ].filter(Boolean).join('\n');
+
+  el.innerHTML = `
+    <div class="rounded-lg border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-3 text-xs space-y-2">
+      <div class="font-semibold text-amber-700 dark:text-amber-400">诊断信息</div>
+      ${rows.join('')}
+      ${d.hint ? `<div class="text-slate-600 dark:text-slate-300 leading-relaxed">
+        <span class="text-slate-400">建议：</span>${escapeHtml(d.hint)}</div>` : ''}
+      ${d.body ? `<div><div class="text-slate-400 mb-1">服务端原文</div>
+        <pre class="whitespace-pre-wrap break-all font-mono text-[11px] bg-white/60 dark:bg-slate-900/40 rounded p-2 max-h-32 overflow-auto">${escapeHtml(d.body)}</pre></div>` : ''}
+      ${d.raw ? `<div><div class="text-slate-400 mb-1">原始错误</div>
+        <pre class="whitespace-pre-wrap break-all font-mono text-[11px] bg-white/60 dark:bg-slate-900/40 rounded p-2 max-h-32 overflow-auto">${escapeHtml(d.raw)}</pre></div>` : ''}
+      <div class="flex gap-2 pt-1">
+        <button data-act="ai-copy-diag" class="btn btn-outline text-xs px-2 py-0.5">复制诊断信息</button>
+      </div>
+    </div>`;
+  const copyBtn = el.querySelector('[data-act="ai-copy-diag"]');
+  if (copyBtn) {
+    copyBtn.onclick = () => {
+      const done = () => toast('诊断信息已复制', 'success', 1500);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(plain).then(done, () => toast('复制失败，请手动选中', 'error'));
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = plain; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); done(); } catch (_) { toast('复制失败，请手动选中', 'error'); }
+        ta.remove();
+      }
+    };
+  }
+}
+window.renderAiDiagnostics = renderAiDiagnostics;
 
 // 是否应渲染 AI 入口
 function aiEnabled() {
@@ -377,18 +462,29 @@ function aiEnabled() {
 }
 window.aiEnabled = aiEnabled;
 
+// 把一次 AI 失败转成给用户看的一句话: 优先后端给出的具体原因, 而不是笼统的"失败"
+function aiFailureMessage(err, fallback) {
+  const d = (err && err.data && err.data.detail) || null;
+  if (d && (d.reason || d.raw)) return String(d.reason || d.raw);
+  return (err && err.message) || fallback || 'AI 调用失败';
+}
+
 // 记录一次 AI 调用失败; 连续 2 次触发熔断 (避免每张卡都干等超时)
-function aiNoteFailure(msg) {
+function aiNoteFailure(msg, err) {
   aiState.failCount += 1;
+  const detail = (err && err.data && err.data.detail) || null;
+  if (detail) console.error('[AI 失败诊断]', detail);
   if (aiState.failCount >= 2 && !aiState.disabled) {
     aiState.disabled = true;
-    toast('AI 暂不可用，已自动回退', 'error');
-  } else if (msg) {
-    toast(msg, 'error');
+    toast('AI 暂不可用，已自动回退（去设置页「测试连接」看具体原因）', 'error', 4000);
+  } else {
+    const text = aiFailureMessage(err, msg);
+    if (text) toast(text, 'error', 6000);
   }
   return aiState.disabled;
 }
 window.aiNoteFailure = aiNoteFailure;
+window.aiFailureMessage = aiFailureMessage;
 
 // 把页面上所有 AI 入口 (data-ai="1") 按当前状态显示/隐藏
 function syncAiEntries(root) {

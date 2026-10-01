@@ -16,19 +16,40 @@ bp = Blueprint("ai", __name__, url_prefix="/api/ai")
 
 @bp.route("/status", methods=["GET"])
 def status():
-    """三态: configured / ping_ok(null=未检测) / message。带 ?ping=1 时做一次连通测试。"""
-    configured = is_configured()
-    ping_ok = None
-    if not configured:
-        message = "未配置，AI 功能已关闭"
-    elif request.args.get("ping") == "1":
-        ok, msg = ping()
-        ping_ok = ok
-        message = msg if ok else f"已配置但连接失败：{msg}"
-    else:
-        message = "已配置"
-    return jsonify({"configured": configured, "ping_ok": ping_ok,
-                    "message": message})
+    """三态: configured / ping_ok(null=未检测) / message / detail。
+
+    带 ?ping=1 时做一次连通测试, detail 里给出可直接排查的字段
+    (请求 URL / 模型 / 耗时 / HTTP 状态 / 服务端原文 / 建议)。
+    """
+    if not is_configured():
+        res = ping()          # 未配置时 ping() 会说明缺哪几项
+        return jsonify({"configured": False, "ping_ok": None,
+                        "message": res["message"], "detail": res["detail"]})
+    if request.args.get("ping") != "1":
+        return jsonify({"configured": True, "ping_ok": None,
+                        "message": "已配置", "detail": {}})
+    res = ping()
+    msg = res["message"] if res["ok"] else f"已配置但连接失败：{res['message']}"
+    return jsonify({"configured": True, "ping_ok": res["ok"],
+                    "message": msg, "detail": res["detail"]})
+
+
+@bp.route("/test", methods=["POST"])
+def test():
+    """连通测试, 可用表单里尚未保存的值覆盖。
+
+    Body (全部可选): {"base_url": "...", "api_key": "...", "model": "..."}
+    api_key 传空字符串表示"沿用已保存的"。返回值与 /status?ping=1 同构, 另加 detail。
+    """
+    data = request.get_json(force=True) or {}
+    res = ping(
+        base_url=data.get("base_url"),
+        api_key=data.get("api_key") or None,   # 空串 = 不覆盖
+        model=data.get("model") or None,
+    )
+    msg = res["message"] if res["ok"] else f"连接失败：{res['message']}"
+    return jsonify({"configured": res["configured"], "ping_ok": res["ok"],
+                    "message": msg, "detail": res["detail"]})
 
 
 @bp.route("/title", methods=["POST"])
@@ -44,7 +65,7 @@ def title():
     try:
         t = generate_title(content)
     except AIError as e:
-        return jsonify({"error": str(e)}), 502
+        return jsonify({"error": str(e), "detail": e.detail}), 502
     return jsonify({"title": t})
 
 
@@ -76,7 +97,7 @@ def gap():
     try:
         result = gap_analysis(row["content_md"], summary)
     except AIError as e:
-        return jsonify({"error": str(e)}), 502
+        return jsonify({"error": str(e), "detail": e.detail}), 502
     return jsonify(result)
 
 
@@ -108,5 +129,5 @@ def mnemonic():
     try:
         text = generate_mnemonic(row["title"], row["content_md"])
     except AIError as e:
-        return jsonify({"error": str(e)}), 502
+        return jsonify({"error": str(e), "detail": e.detail}), 502
     return jsonify({"content_md": text})

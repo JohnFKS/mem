@@ -741,7 +741,7 @@ const ReviewTab = {
       this.renderGapResult(res);
     } catch (e) {
       // 失败计入熔断: 连续 2 次后隐藏「对比分析」(复述框与跳过按钮仍可用)
-      const disabled = aiNoteFailure('对比分析失败: ' + e.message);
+      const disabled = aiNoteFailure('对比分析失败', e);
       if (disabled && btn) btn.style.display = 'none';
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '🔍 对比分析'; }
