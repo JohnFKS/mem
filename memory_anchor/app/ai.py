@@ -205,6 +205,53 @@ def _server_error_message(text: str) -> str:
     return ""
 
 
+def _looks_like_sse(text: str) -> bool:
+    """是否像 SSE 流式响应 (data: {...} 一行一个 chunk)。"""
+    t = (text or "").lstrip()
+    return t.startswith("data:") or "\ndata:" in t or "data: {" in t
+
+
+def _parse_sse(text: str) -> str:
+    """把 SSE 流式响应聚合成完整文本。
+
+    有些 OpenAI 兼容网关/中转无视 stream=false, 一律按 SSE 返回; 这里兼容它,
+    把所有 chunk 的 delta.content 拼起来。
+    """
+    payloads = []
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith(":"):      # 注释 / 心跳
+            continue
+        if line.startswith("data:"):
+            payloads.append(line[5:].strip())
+    if not payloads:
+        # 极端情况: 整段挤在一行里
+        payloads = re.findall(r"data:\s*(\{.*?\})(?=\s*(?:data:|$))", text or "", re.S)
+
+    out = []
+    for p in payloads:
+        if p in ("[DONE]", "DONE"):
+            break
+        try:
+            obj = json.loads(p)
+        except (ValueError, TypeError):
+            continue
+        for ch in (obj.get("choices") or []):
+            if not isinstance(ch, dict):
+                continue
+            delta = ch.get("delta") or {}
+            piece = delta.get("content") if isinstance(delta, dict) else None
+            if not piece:
+                piece = ch.get("text") or ch.get("content")
+            if isinstance(piece, str) and piece:
+                out.append(piece)
+            elif isinstance(piece, list):        # 少数实现把 content 拆成片段数组
+                for sub in piece:
+                    if isinstance(sub, dict) and isinstance(sub.get("text"), str):
+                        out.append(sub["text"])
+    return "".join(out)
+
+
 def _http_diagnose(status: int, text: str) -> tuple:
     reason, hint = _HTTP_HINTS.get(status, ("", ""))
     if not reason:
@@ -237,6 +284,8 @@ def chat(messages: list, max_tokens: int = 200, json_mode: bool = False,
         "messages": messages,
         "max_tokens": max_tokens,
         "temperature": 0.3,
+        # 显式声明不要流式: 多数网关会尊重; 少数强制 SSE 的在下面按流式聚合兜底
+        "stream": False,
     }
     if json_mode:
         body["response_format"] = {"type": "json_object"}
@@ -266,16 +315,43 @@ def chat(messages: list, max_tokens: int = 200, json_mode: bool = False,
                        resp.status_code, reason, detail["body"])
         raise AIError(f"AI 服务{reason}", detail)
 
+    text = _resp_text(resp)
+    ctype = (resp.headers.get("Content-Type") or "").lower()
+
+    # 1) 流式: 部分网关无视 stream=false, 一律按 SSE 返回, 这里把 chunk 拼起来
+    if "text/event-stream" in ctype or _looks_like_sse(text):
+        content = _parse_sse(text)
+        if content.strip():
+            return content
+        detail = dict(common, kind="parse", elapsed_ms=elapsed,
+                      reason="服务端以 SSE 流式返回，但聚合后没有拿到任何文本内容",
+                      hint="网关强制走了流式且没有回传内容（或只回了 role 没有 content）。"
+                           "换一个支持非流式的接口地址，或换模型再试。",
+                      body=_safe_body(text))
+        logger.warning("SSE 聚合为空 | body=%s", detail["body"])
+        raise AIError("AI 响应解析失败：流式响应里没有文本内容", detail)
+
+    # 2) 常规 JSON
     try:
-        data = resp.json()
+        data = json.loads(text)
         return data["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError) as e:
-        body = _resp_text(resp)
-        detail = dict(common, kind="parse", elapsed_ms=elapsed,
-                      reason=f"响应不是预期的 OpenAI 结构（{type(e).__name__}）",
-                      hint="接口返回的不是 OpenAI 兼容格式。确认 Base URL 指向的是 /v1，"
-                           "且没有被网关/登录页拦截（响应是不是一段 HTML？）。",
-                      body=_safe_body(body))
+        # 有些实现把单个 chunk 当 JSON 直接回 (object=chat.completion.chunk)
+        chunk_txt = ""
+        try:
+            chunk_txt = _parse_sse("data: " + text)
+        except Exception:
+            chunk_txt = ""
+        if chunk_txt.strip():
+            return chunk_txt
+        reason = f"响应不是预期的 OpenAI 结构（{type(e).__name__}）"
+        hint = "接口返回的不是 OpenAI 兼容格式。确认 Base URL 指向的是 /v1，" \
+               "且没有被网关/登录页拦截（响应是不是一段 HTML？）。"
+        if "<html" in text.lower()[:200] or "<!doctype" in text.lower()[:200]:
+            reason = "响应是一段 HTML（多半被网关或登录页拦截了）"
+            hint = "Base URL 是否填错、是否要走代理、该地址是否需要登录才能访问。"
+        detail = dict(common, kind="parse", elapsed_ms=elapsed, reason=reason,
+                      hint=hint, body=_safe_body(text))
         logger.warning("AI 响应解析失败: %s | body=%s", e, detail["body"])
         raise AIError("AI 响应解析失败：响应不是 OpenAI 兼容格式", detail)
 

@@ -582,6 +582,10 @@ Resp: {"id": 42, "title": "..."}     # 400: content_md 为空
   - `_resp_text()`：强制按 UTF-8 取响应体，避免 requests 对 `text/*` 退 ISO-8859-1 导致中文报错乱码。
   - `_safe_body()` 打码响应里的 `sk-***`；`_mask_key()` 只回显首尾各 3 位。
   - 连通测试 `TIMEOUT_PING` 5s → 8s（中转/海外首包常 3~5s，5s 太紧）。
+  - **SSE 流式兼容**（实战踩到）：某些网关无视 `stream=false`，一律返回 `text/event-stream`
+    （`data: {"object":"chat.completion.chunk",...}` 一行一个 chunk），原本直接报
+    “响应不是 OpenAI 兼容格式”。现在请求显式带 `stream: false`，同时 `_looks_like_sse()` +
+    `_parse_sse()` 负责识别并按 `delta.content` 聚合；聚合为空时给出专门的错误与建议。
 - 路由：`GET /api/ai/status?ping=1` 返回 `detail`；新增 `POST /api/ai/test`，可带
   `base_url/api_key/model` 覆盖值**不落库**（改了 URL 不用先保存就能试）。
   生成类接口（标题/复述对比/速记）的 502 也带 `detail`。
@@ -597,6 +601,7 @@ Resp: {"id": 42, "title": "..."}     # 400: content_md 为空
 | MCP | 39 | 12 工具注册（含真实 stdio 会话）、题目卡建卡、kind 搜索、速记增删查、快捕两种类型、非法评分被拒 |
 | 前端 jsdom | 53 | 复述显示在答案面且位于标准内容之上、未写复述提示、gap 摘要、题目卡正面题干与详情解答/评分点/错因、速记渲染/AI 三态/熔断/保存 source、标签下拉与徽章筛选、💡 角标与摘要回退 |
 | 回归 | 110 | 批注 14 / 待复习列表 38 / 费曼 29 / 错题 29 全绿 |
+| SSE 流式兼容（后端） | 13 | 强制 SSE 的服务连通测试通过、标题/速记/复述对比在流式下均正常、流式无内容时报错点明流式 |
 | AI 诊断（后端） | 48 | 未配置说清缺哪几项、正常连通、401/403/404/429/500、返回 HTML、DNS、端口拒绝、8s 超时、base_url 两纠错形态、test 不落库、502 带 detail、保存规范化、不泄露 key |
 | AI 诊断（前端） | 22 | message/detail 被保留、诊断面板字段齐全、成功时隐藏、用未保存值测试、toast 取后端原因、连续 2 次熔断提示、err.data.detail 可用 |
 
