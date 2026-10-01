@@ -11,7 +11,7 @@
 > 全绿，另有 110 项回归全绿。
 > **已推送 GitHub**：JohnFKS/mem@master — [524aa42](https://github.com/JohnFKS/mem/commit/524aa4239a560f4a2125819541c164cc48ba7c35)
 > （远端 46 个文件与本地逐文件 blob SHA 校验一致）。
-> 公网预览：https://a1730183bef387d8c.app.workbuddy.host
+> 公网预览：https://ac.app.workbuddy.host
 
 | # | 事项 | 一句话定位 | 状态 |
 |---|------|-----------|------|
