@@ -301,6 +301,9 @@ def _merge_messages(messages: list) -> list:
     head = "\n\n".join(p for p in sys_parts if p.strip())
     tail = "\n\n".join(p for p in user_parts if p.strip())
     text = f"{head}\n\n---\n\n{tail}" if head else tail
+    # 指令放末尾: 这类网关把整段都当用户提问, 模型更关注最后几句
+    text += ("\n\n---\n请严格按上面的要求输出【结果正文】："
+             "只给结果，不要复述要求、不要解释、不要输出代码。")
     return [{"role": "user", "content": text}]
 
 
@@ -310,6 +313,19 @@ _META_REPLY = re.compile(
     r"|请问你|请问您|您希望|你希望|我可以帮|我能帮|有什么可以帮"
     r"|作为.*?(助手|模型).{0,10}(我|无法)"
     r"|已生成完毕|请告诉我)", re.I)
+
+
+# 模型把卡片当聊天问题回答时吐出来的代码/讲解
+_CODE_REPLY = re.compile(
+    r"```"
+    r"|^\s*(def |class |import |from \w+ import |public |function |#include)"
+    r"|\b(python|java|c\+\+|javascript)\b(?=[\s:：])",
+    re.I | re.M)
+
+
+def _looks_like_code(text: str) -> bool:
+    """返回内容是一段代码/讲解, 而不是我们要的标题或速记。"""
+    return bool((text or "").strip()) and bool(_CODE_REPLY.search(text or ""))
 
 
 def _looks_like_meta_reply(text: str) -> bool:
@@ -454,12 +470,17 @@ def _tidy_title(raw: str) -> str:
     （如"拉格朗日中值定理是微积分中的基本定理之一，它建立了……"）。
     这里按"谓语/句读"断在完整短语上，而不是硬截在半句话中间。
     """
-    t = re.sub(r"\s+", " ", (raw or "").strip())
+    t = (raw or "")
+    if "```" in t:                                  # 代码块: 只保留前面的话
+        t = t.split("```")[0]
+    t = re.sub(r"\s+", " ", t.strip())
     t = t.strip('"\'`* ').strip()
     t = t.replace("**", "").replace("`", "")       # 去掉模型爱加的加粗/代码标记
     t = re.sub(r"^(标题|主题)\s*[:：]\s*", "", t)
     t = re.sub(r"^#+\s*", "", t)                    # 模型偶尔加 markdown 标题标记
     t = t.split("\n")[0].strip()
+    if not t:
+        return ""
     if len(t) > MAX_TITLE_LEN:
         t = t[:MAX_TITLE_LEN]
     if len(t) > 24:
@@ -472,6 +493,12 @@ def _tidy_title(raw: str) -> str:
         m = re.match(r"^(.{4,20}?)(是|指的是|描述了|说明了|揭示了|表明|用于|用来|把|将|即)", t)
         # "这/那/它" 开头的残句不是标题, 不切
         if m and len(m.group(1)) >= 4 and m.group(1)[0] not in "这那它其该此":
+            t = m.group(1)
+    if len(t) > 24:
+        # "…的递归实现 python class TreeNode…" -> 断在代码关键字前
+        m = re.match(r"^(.{4,24}?)\s+(python|def|class|import|public|function|java"
+                     r"|代码如下|code)\b", t, re.I)
+        if m and len(m.group(1)) >= 4:
             t = m.group(1)
     if len(t) > 24:
         # 再断在第一个句读处, 至少留 6 个字
@@ -487,14 +514,18 @@ def generate_title(content_md: str) -> str:
     if not text:
         raise AIError("正文为空")
     text = text[:2000]
-    raw = chat(
-        [
-            {"role": "system", "content": TITLE_SYSTEM},
-            {"role": "user", "content": text},
-        ],
-        max_tokens=50,
-        timeout=_timeout(),
-    )
+    messages = [
+        {"role": "system", "content": TITLE_SYSTEM},
+        {"role": "user", "content": text},
+    ]
+    raw = chat(messages, max_tokens=50, timeout=_timeout())
+    if _looks_like_code(raw):
+        # 网关把卡片当聊天问题回答了(吐了一堆代码), 合并角色再要一次
+        logger.warning("标题返回疑似代码，合并 system 后重试")
+        again = chat(_merge_messages(messages), max_tokens=50,
+                     timeout=_timeout(), fallback=False)
+        if again and not _looks_like_code(again):
+            raw = again
     title = _tidy_title(raw)
     if not title:
         raise AIError("AI 返回空标题")
