@@ -80,6 +80,23 @@ def answer(rid: int):
     if rating not in (1, 2, 3, 4):
         return jsonify({"error": "invalid rating"}), 400
 
+    # ---- 事项4 (错题): 可选字段, 不影响 FSRS 排程本身 ----
+    def _as_list(v):
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return v
+        if isinstance(v, str):
+            try:
+                parsed = json.loads(v)
+                return parsed if isinstance(parsed, list) else []
+            except (ValueError, TypeError):
+                return []
+        return []
+
+    missed_points = _as_list(data.get("missed_points"))
+    mistake_tags = _as_list(data.get("mistake_tags"))
+
     now = now_ts()
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM study_record WHERE id = ?", (rid,)).fetchone()
@@ -122,13 +139,17 @@ def answer(rid: int):
             (record_id, rating, reviewed_at, elapsed_days, scheduled_days,
              retention, state_before, state_after,
              stability_before, stability_after,
-             difficulty_before, difficulty_after)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+             difficulty_before, difficulty_after,
+             missed_points, mistake_tags)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 rid, rating, now, elapsed_days, result.scheduled_days,
                 retention_before, state_before_text, state_text,
                 row["stability"], new_state.stability,
                 row["difficulty"] if row["difficulty"] else 0, new_state.difficulty,
+                # ---- 事项4 (错题): 随评分一起提交的错因与漏掉的得分点 ----
+                json.dumps(missed_points, ensure_ascii=False),
+                json.dumps(mistake_tags, ensure_ascii=False),
             ),
         )
 
@@ -138,11 +159,13 @@ def answer(rid: int):
         conn.execute(
             """UPDATE study_record SET
                 state=?, stability=?, difficulty=?, reps=?, lapses=?,
-                last_review=?, due=?, updated_at=?
+                last_review=?, due=?, updated_at=?, mistake_tags=?
                WHERE id=?""",
             (
                 state_text, new_state.stability, new_state.difficulty,
-                reps, lapses, now, result.due, now, rid,
+                reps, lapses, now, result.due, now,
+                # 把本次错因同步到卡片上 (便于列表/详情展示最近错因)
+                json.dumps(mistake_tags, ensure_ascii=False), rid,
             ),
         )
         updated = conn.execute("SELECT * FROM study_record WHERE id = ?", (rid,)).fetchone()
@@ -177,7 +200,18 @@ def review_logs():
                ORDER BY l.reviewed_at DESC LIMIT ?""",
             (since, limit),
         ).fetchall()
-    return jsonify({"items": [dict(r) for r in rows]})
+
+    # 事项4: JSON 列解析为数组, 与 records 的返回保持一致
+    items = []
+    for r in rows:
+        d = dict(r)
+        for col in ("missed_points", "mistake_tags"):
+            try:
+                d[col] = json.loads(d.get(col) or "[]")
+            except (ValueError, TypeError):
+                d[col] = []
+        items.append(d)
+    return jsonify({"items": items})
 
 
 @bp.route("/preview/<int:rid>", methods=["GET"])

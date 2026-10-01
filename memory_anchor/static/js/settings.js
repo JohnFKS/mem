@@ -111,6 +111,38 @@ const SettingsTab = {
           </div>
         </div>
 
+        <!-- AI 服务 (可选增强) -->
+        <div class="bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-5">
+          <h3 class="text-sm font-semibold mb-3 flex items-center gap-1.5">
+            <svg class="w-4 h-4 text-brand-600" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a7 7 0 0 1 7 7c0 2.4-1.2 3.9-2.4 5.2-.8.9-1.6 1.7-1.6 3.3M12 2a7 7 0 0 0-7 7c0 2.4 1.2 3.9 2.4 5.2.8.9 1.6 1.7 1.6 3.3M9 21h6"/></svg>
+            AI 服务（可选）
+            <span id="aiStatusBadge" class="ml-1 text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-700 text-slate-500">检测中…</span>
+          </h3>
+          <p class="text-xs text-slate-400 mb-3">
+            不配置 = 所有 AI 功能自动关闭，产品完整可用。配置无误后才会出现 AI 入口；
+            运行中断线/超时会自动回退到无 AI 路径，不影响复习主流程。
+          </p>
+          <div class="space-y-3">
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">Base URL（OpenAI 兼容，如 https://api.example.com/v1）</label>
+              <input id="setAiBaseUrl" type="text" placeholder="https://api.example.com/v1" class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800">
+            </div>
+            <div>
+              <label class="block text-xs text-slate-400 mb-1">API Key（不会回显，留空表示保持已保存的值）</label>
+              <input id="setAiApiKey" type="password" autocomplete="off" placeholder="sk-…" class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800">
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-slate-400 mb-1">模型名（如 gpt-4o-mini）</label>
+                <input id="setAiModel" type="text" placeholder="gpt-4o-mini" class="w-full px-3 py-1.5 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800">
+              </div>
+              <div class="flex items-end">
+                <button id="testAiBtn" class="btn btn-outline text-sm">测试连接</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- 保存按钮 -->
         <div class="sticky bottom-4 flex justify-end gap-2 bg-white/80 dark:bg-slate-900/80 backdrop-blur p-3 rounded-lg border border-slate-200 dark:border-slate-700">
           <button id="resetAllBtn" class="btn btn-outline text-sm">重置全部设置</button>
@@ -128,6 +160,7 @@ const SettingsTab = {
       this.state.backups = (await api('/api/backup')).items || [];
       this.fillForm();
       this.renderBackups();
+      this.refreshAiBadge(false);   // 不带 ping, 只反映是否已配置
     } catch (e) {
       toast('加载设置失败: ' + e.message, 'error');
     }
@@ -146,6 +179,26 @@ const SettingsTab = {
     document.getElementById('setTargetReview').value = s.daily_target_review || 50;
     document.getElementById('setAutoBackup').checked = !!s.auto_backup;
     document.getElementById('setBackupInterval').value = s.backup_interval_days || 7;
+    // AI 配置: api_key 不回显 (输入框 type=password, 留空保持原值)
+    document.getElementById('setAiBaseUrl').value = s.ai_base_url || '';
+    document.getElementById('setAiModel').value = s.ai_model || '';
+  },
+
+  // 刷新 AI 状态徽章 (未配置 / 已连接 / 连接失败)
+  async refreshAiBadge(ping) {
+    const st = await refreshAiState({ ping: !!ping });
+    const badge = document.getElementById('aiStatusBadge');
+    if (!badge) return st;
+    let text = '未配置，AI 已关闭', cls = 'bg-slate-100 dark:bg-slate-700 text-slate-500';
+    if (st.configured && st.disabled) {
+      text = '已配置但连接失败'; cls = 'bg-red-100 dark:bg-red-900/30 text-red-600';
+    } else if (st.configured) {
+      text = ping ? (st.failCount ? '已配置但连接失败' : '已连接') : '已配置';
+      cls = 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600';
+    }
+    badge.textContent = text;
+    badge.className = `ml-1 text-xs px-2 py-0.5 rounded-full ${cls}`;
+    return st;
   },
 
   renderBackups() {
@@ -211,13 +264,29 @@ const SettingsTab = {
         daily_target_review: parseInt(document.getElementById('setTargetReview').value) || 50,
         auto_backup: document.getElementById('setAutoBackup').checked,
         backup_interval_days: parseInt(document.getElementById('setBackupInterval').value) || 7,
+        ai_base_url: document.getElementById('setAiBaseUrl').value.trim(),
+        ai_model: document.getElementById('setAiModel').value.trim(),
       };
+      // API Key: 留空表示保持已保存的值, 非空才更新
+      const key = document.getElementById('setAiApiKey').value;
+      if (key) data.ai_api_key = key.trim();
       try {
         const updated = await api('/api/settings', { method: 'PUT', body: data });
         App.settings = updated;
         applyTheme(updated.theme);
         toast('设置已保存', 'success');
+        // 保存后即时刷新 AI 状态并做一次连通测试, 无需刷新页面
+        await this.refreshAiBadge(true);
+        syncAiEntries();
       } catch (e) { toast('保存失败: ' + e.message, 'error'); }
+    };
+    document.getElementById('testAiBtn').onclick = async () => {
+      try {
+        const st = await this.refreshAiBadge(true);
+        toast(st.configured && !st.disabled ? '连接正常' : (st.configured ? '连接失败，请检查配置' : '尚未配置 AI'),
+              st.configured && !st.disabled ? 'success' : 'error');
+        syncAiEntries();
+      } catch (e) { toast('检测失败: ' + e.message, 'error'); }
     };
     document.getElementById('resetFsrsBtn').onclick = async () => {
       confirmDialog('确定重置 FSRS 参数为默认值? 这不会影响已有卡片的复习进度。', async () => {

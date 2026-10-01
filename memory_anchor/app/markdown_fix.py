@@ -470,3 +470,51 @@ def fix_markdown(text, options=None) -> str:
         text = _protect_code(text, _fullwidth_to_halfwidth, line_level=False)
 
     return text
+
+
+# --------------------------------------------------------------------------- #
+# 思源笔记 kramdown 方言清洗 (事项5: 快速捕捉)
+# --------------------------------------------------------------------------- #
+# 块引/双链: ((20240301120000-abcdefg "显示文本"))
+_SIYUAN_REF = re.compile(r"\(\((\d{14}-[0-9a-z]{7})\s+[\"“”]([^\"”]*)[\"“”]\)\)")
+_SIYUAN_REF_NO_TEXT = re.compile(r"\(\((\d{14}-[0-9a-z]{7})\)\)")
+# 思源内链: [文本](siyuan://blocks/xxx)
+_SIYUAN_LINK = re.compile(r"\[([^\]]*)\]\(siyuan://[^)]*\)")
+# 思源标签: #标签# -> #标签
+_SIYUAN_TAG = re.compile(r"#([^#\s]+)#")
+# IAL 属性: {: id="..." updated="..." }
+_SIYUAN_IAL_TAIL = re.compile(r"\s*\{:.*?\}\s*$")
+_SIYUAN_IAL_ANY = re.compile(r"\{:.*?\}")
+# 嵌入块: {{select * from blocks}}
+_SIYUAN_EMBED = re.compile(r"^\s*\{\{.*\}\}\s*$")
+
+
+def clean_siyuan_dialect(text: str) -> str:
+    """清洗思源笔记复制出来的 kramdown 方言, 只作用于非代码块区间。
+
+    按序处理: 嵌入块(整行删) -> IAL 属性 -> 块引/双链 -> 思源标签。
+    任何来源粘贴的内容都能享受这套清洗, 不只在思源插件里生效。
+    """
+    if not text:
+        return text or ""
+
+    def _clean_line(line: str) -> str:
+        # 4) 嵌入块: 整行删除
+        if _SIYUAN_EMBED.match(line):
+            return ""
+        s = line
+        # 1) IAL 属性: 优先去行尾, 再兜底去掉残留
+        s = _SIYUAN_IAL_TAIL.sub("", s)
+        s = _SIYUAN_IAL_ANY.sub("", s)
+        # 2) 块引 / 双链 -> 只保留显示文本
+        s = _SIYUAN_REF.sub(lambda m: m.group(2), s)
+        s = _SIYUAN_REF_NO_TEXT.sub("", s)
+        s = _SIYUAN_LINK.sub(lambda m: m.group(1), s)
+        # 3) 思源标签 #标签# -> #标签
+        s = _SIYUAN_TAG.sub(lambda m: "#" + m.group(1), s)
+        return s
+
+    out = _protect_code(text, _clean_line, line_level=True)
+    # 删除嵌入块后可能留下连续空行, 最多压成 1 个
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip()

@@ -69,6 +69,9 @@ const RecordsTab = {
             <option value="review" ${this.state.state==='review'?'selected':''}>复习中</option>
             <option value="relearning" ${this.state.state==='relearning'?'selected':''}>重学</option>
           </select>
+          <select id="recTagFilter" class="px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 max-w-[160px]">
+            <option value="">全部标签${this.state.tag ? ` (${escapeHtml(this.state.tag)})` : ''}</option>
+          </select>
           <input id="recDateFrom" type="date" class="px-2 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800" value="${this.state.dateFrom}">
           <span class="text-slate-400 text-sm">至</span>
           <input id="recDateTo" type="date" class="px-2 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800" value="${this.state.dateTo}">
@@ -115,6 +118,11 @@ const RecordsTab = {
       this.state.state = e.target.value;
       this.load();
     });
+    document.getElementById('recTagFilter').addEventListener('change', (e) => {
+      this.state.tag = e.target.value;
+      this.load();
+    });
+    this.loadTagOptions();
     document.getElementById('recDateFrom').addEventListener('change', (e) => {
       this.state.dateFrom = e.target.value;
       this.load();
@@ -147,6 +155,36 @@ const RecordsTab = {
     });
 
     await this.load();
+  },
+
+  // 标签下拉选项: 从 /api/records/tags 拉全量标签 (带卡片计数)
+  async loadTagOptions() {
+    const sel = document.getElementById('recTagFilter');
+    if (!sel) return;
+    let items = [];
+    try {
+      const res = await api('/api/records/tags');
+      items = res.items || [];
+    } catch (e) { /* 标签下拉失败不影响主流程 */ }
+    const cur = this.state.tag;
+    const opts = ['<option value="">全部标签</option>'].concat(
+      items.map(t => `<option value="${escapeHtml(t.tag)}"${t.tag === cur ? ' selected' : ''}>#${escapeHtml(t.tag)} (${t.count})</option>`)
+    );
+    // 当前标签可能已无卡片 (被删/改名), 仍保留选中项, 避免筛选状态悄悄丢失
+    if (cur && !items.some(t => t.tag === cur)) {
+      opts.push(`<option value="${escapeHtml(cur)}" selected>#${escapeHtml(cur)} (0)</option>`);
+    }
+    sel.innerHTML = opts.join('');
+    sel.value = cur || '';
+    this.state.tagOptions = items.map(t => t.tag);
+  },
+
+  // 点卡片上的标签徽章 -> 直接按该标签筛选
+  setTagFilter(tag) {
+    this.state.tag = tag || '';
+    const sel = document.getElementById('recTagFilter');
+    if (sel) sel.value = this.state.tag;
+    this.load();
   },
 
   async load() {
@@ -200,6 +238,13 @@ const RecordsTab = {
         confirmDialog(`确定删除「${it?.title || ''}」吗?`, () => this.deleteOne(id), { danger: true, okText: '删除' });
       });
     });
+    // 卡片上的标签徽章: 点击直接按该标签筛选 (阻止冒泡, 否则会打开详情)
+    container.querySelectorAll('[data-tag-filter]').forEach(el => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.setTagFilter(el.dataset.tagFilter);
+      });
+    });
     container.querySelectorAll('[data-check-id]').forEach(el => {
       el.addEventListener('change', (e) => {
         const id = parseInt(el.dataset.checkId);
@@ -220,7 +265,9 @@ const RecordsTab = {
   },
 
   cardHtml(it) {
-    const tags = (it.tags || []).map(t => `<span class="badge bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300">${escapeHtml(t)}</span>`).join('');
+    const tags = (it.tags || []).map(t => `<button data-tag-filter="${escapeHtml(t)}" title="按标签「${escapeHtml(t)}」筛选" class="badge bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 hover:bg-brand-100 dark:hover:bg-brand-900/40">${escapeHtml(t)}</button>`).join('');
+    const mnBadge = (it.mnemonic_count || 0) > 0
+      ? `<span class="badge bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300" title="已有 ${it.mnemonic_count} 条速记">💡 ${it.mnemonic_count}</span>` : '';
     const images = (it.image_paths || []).slice(0, 3).map(p => `<img src="${p}" class="w-12 h-12 object-cover rounded">`).join('');
     const dueClass = it.due && it.due * 1000 < Date.now() ? 'badge-due' : 'bg-slate-100 dark:bg-slate-700 text-slate-500';
     return `
@@ -230,12 +277,13 @@ const RecordsTab = {
         <div class="flex-1 min-w-0">
           <div class="flex items-center gap-2 mb-1">
             ${it.pinned ? '<span class="badge badge-pinned">置顶</span>' : ''}
-            <h3 class="font-medium text-sm truncate flex-1">${escapeHtml(it.title)}</h3>
+            <h3 class="font-medium text-sm truncate flex-1">${it.kind === 'quiz' ? '<span class="badge bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 mr-1">题目</span>' : ''}${escapeHtml(it.title)}</h3>
             ${stateBadge(it.state)}
           </div>
-          ${it.content_md ? `<div class="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-1">${escapeHtml(truncate(it.content_md.replace(/[#*`>\\-]/g,''), 120))}</div>` : ''}
+          ${this.previewText(it) ? `<div class="text-xs text-slate-500 dark:text-slate-400 line-clamp-2 mb-1">${escapeHtml(this.previewText(it))}</div>` : ''}
           <div class="flex items-center gap-1.5 flex-wrap">
             ${tags}
+            ${mnBadge}
             ${images ? `<div class="flex gap-1 ml-auto">${images}${(it.image_paths.length > 3) ? `<div class="w-12 h-12 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center text-xs text-slate-500">+${it.image_paths.length - 3}</div>` : ''}</div>` : ''}
           </div>
           <div class="flex items-center gap-2 mt-2 text-[11px] text-slate-400">
@@ -258,6 +306,48 @@ const RecordsTab = {
         </div>
       </div>
     `;
+  },
+
+  // 题目卡详情: 题干之外还要能看到标准解答与评分点 (复习页只在翻答案后才显示)
+  quizDetailSection(it) {
+    const rubric = it.rubric || [];
+    let html = '';
+    if ((it.solution_md || '').trim()) {
+      html += `<div>
+        <div class="text-xs text-slate-400 mb-1">标准解答</div>
+        <div class="md-body p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg">${renderMarkdown(it.solution_md)}</div>
+      </div>`;
+    }
+    if (rubric.length) {
+      html += `<div>
+        <div class="text-xs text-slate-400 mb-1">评分点 (${rubric.length})</div>
+        <div class="space-y-1 text-sm">
+          ${rubric.map(r => `<div class="flex items-start gap-2">
+            <span class="text-xs text-slate-400">${r.score} 分</span>
+            <span class="flex-1">${escapeHtml(r.point || '')}</span>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }
+    if ((it.mistake_tags || []).length) {
+      html += `<div>
+        <div class="text-xs text-slate-400 mb-1">最近错因</div>
+        <div class="flex flex-wrap gap-1">
+          ${it.mistake_tags.map(t => `<span class="badge bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400">${escapeHtml(mistakeTagLabel(t))}</span>`).join('')}
+        </div>
+      </div>`;
+    }
+    return html;
+  },
+
+  // 列表卡片上的一行摘要。题目卡若题干为空, 回退到"解答"摘要, 避免卡片看起来空空如也
+  previewText(it) {
+    const plain = (s) => (s || '').replace(/[#*`>\\-]/g, ' ').replace(/\s+/g, ' ').trim();
+    if ((it.content_md || '').trim()) return truncate(plain(it.content_md), 120);
+    if (it.kind === 'quiz' && (it.solution_md || '').trim()) {
+      return '解答：' + truncate(plain(it.solution_md), 110);
+    }
+    return '';
   },
 
   tableHtml() {
@@ -367,9 +457,10 @@ const RecordsTab = {
           </div>
           <div>
             <div class="text-xs text-slate-400 mb-1">标题</div>
-            <h1 class="text-lg font-bold">${escapeHtml(it.title)}</h1>
+            <h1 class="text-lg font-bold">${it.kind === 'quiz' ? '<span class="badge bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 mr-1">题目</span>' : ''}${escapeHtml(it.title)}</h1>
           </div>
           ${tags ? `<div class="flex gap-1 flex-wrap">${tags}</div>` : ''}
+          ${it.kind === 'quiz' ? this.quizDetailSection(it) : ''}
           <div class="grid grid-cols-2 gap-2 text-xs">
             <div class="bg-slate-50 dark:bg-slate-800/50 rounded p-2"><div class="text-slate-400">学习日期</div><div class="font-medium">${it.learn_date}</div></div>
             <div class="bg-slate-50 dark:bg-slate-800/50 rounded p-2"><div class="text-slate-400">下次复习</div><div class="font-medium">${dueLabel(it.due)}</div></div>
@@ -400,6 +491,9 @@ const RecordsTab = {
             <div>
               <button class="btn btn-outline w-full text-sm" onclick="openAnnotationDrawer(${it.id}, '')">+ 添加批注（选中正文右键也可）</button>
             </div>`}
+          <div id="detailMnSection">
+            ${mnemonicsSection(it.mnemonics || [], it.id)}
+          </div>
           ${logs ? `
             <div>
               <div class="text-xs text-slate-400 mb-1">复习历史 (最近 ${Math.min(it.review_logs.length, 20)} 次)</div>
@@ -421,6 +515,18 @@ const RecordsTab = {
         applyAnnotations(detailBody, it.annotations || []);
         initAnnotationContextMenu(detailBody, it.id);
       }
+      // 速记: 抽屉里增删改后, 局部刷新详情里的速记区块 (不用重开整个抽屉)
+      const rid = it.id;
+      window.__mnemonicViews = (window.__mnemonicViews || []).filter(v => v.recordId !== rid);
+      window.__mnemonicViews.push({
+        recordId: rid,
+        redraw: async () => {
+          const box = document.getElementById('detailMnSection');
+          if (!box) return;
+          const res = await api(`/api/records/${rid}/mnemonics`).catch(() => null);
+          box.innerHTML = mnemonicsSection((res && res.items) || [], rid);
+        },
+      });
     } catch (e) {
       toast('加载详情失败: ' + e.message, 'error');
     }
@@ -433,11 +539,37 @@ const RecordsTab = {
       <div class="p-5 space-y-3">
         <div>
           <label class="block text-xs text-slate-400 mb-1">标题 *</label>
-          <input id="edTitle" type="text" placeholder="给这条记忆起个名字…" class="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800">
+          <div class="flex items-center gap-2">
+            <input id="edTitle" type="text" placeholder="给这条记忆起个名字…" class="flex-1 px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800">
+            <button id="edAiTitleBtn" type="button" title="用 AI 根据正文生成标题"
+                    class="btn btn-outline text-sm whitespace-nowrap" style="display:none">✨ AI 标题</button>
+          </div>
         </div>
         <div>
           <label class="block text-xs text-slate-400 mb-1">标签 (逗号或空格分隔)</label>
           <input id="edTags" type="text" placeholder="例如: 英语, 单词, GRE" class="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800">
+        </div>
+        <div>
+          <label class="block text-xs text-slate-400 mb-1">类型</label>
+          <div class="flex items-center gap-4 text-sm">
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="edKind" value="note" checked class="accent-brand-600"> 笔记
+            </label>
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="edKind" value="quiz" class="accent-brand-600"> 题目（错题）
+            </label>
+          </div>
+        </div>
+        <div id="edQuizFields" style="display:none" class="space-y-3">
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">标准解答 (Markdown + 公式)</label>
+            ${buildMarkdownEditor('sol', { label: '标准解答', rows: 5 })}
+          </div>
+          <div>
+            <label class="block text-xs text-slate-400 mb-1">评分点 rubric（一行一个，格式：分值|要点）</label>
+            <textarea id="edRubric" rows="4" placeholder="3|正确列出方程并列出所有受力&#10;1|符号方向约定一致&#10;2|最终数值与单位正确" class="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800"></textarea>
+            <p class="text-xs text-slate-400 mt-1">复习时逐条勾选是否拿到分，未拿满需选择错因。</p>
+          </div>
         </div>
         <div class="grid grid-cols-2 gap-2">
           <div>
@@ -490,6 +622,50 @@ const RecordsTab = {
       });
     };
 
+    // ---- AI 标题 (可选增强): 仅在 AI 已配置且正文非空时出现 ----
+    const aiTitleBtn = document.getElementById('edAiTitleBtn');
+    const syncAiTitleBtn = () => {
+      if (!aiTitleBtn) return;
+      const hasContent = (document.getElementById('edContent')?.value || '').trim().length > 0;
+      // 未配置 / 熔断回退 / 正文为空 -> 按钮不渲染 (不是置灰)
+      aiTitleBtn.style.display = (aiEnabled() && hasContent) ? '' : 'none';
+    };
+    const edContentEl = document.getElementById('edContent');
+    if (edContentEl) edContentEl.addEventListener('input', syncAiTitleBtn);
+    if (aiTitleBtn) {
+      aiTitleBtn.onclick = async () => {
+        const content = (document.getElementById('edContent')?.value || '').trim();
+        if (!content) { toast('请先填写正文', 'error'); return; }
+        aiTitleBtn.disabled = true;
+        const oldText = aiTitleBtn.textContent;
+        aiTitleBtn.textContent = '✨ 生成中…';
+        try {
+          const res = await api('/api/ai/title', { method: 'POST', body: { content_md: content } });
+          document.getElementById('edTitle').value = res.title;
+          toast('已生成标题', 'success');
+        } catch (e) {
+          const disabled = aiNoteFailure('生成标题失败: ' + e.message);
+          if (disabled) aiTitleBtn.style.display = 'none';
+        } finally {
+          aiTitleBtn.disabled = false;
+          aiTitleBtn.textContent = oldText;
+        }
+      };
+    }
+    syncAiTitleBtn();
+
+    // ---- 事项4 (错题): 类型切换 -> 显示/隐藏解答与 rubric ----
+    const quizFields = document.getElementById('edQuizFields');
+    const syncQuizFields = () => {
+      const kind = document.querySelector('input[name="edKind"]:checked')?.value || 'note';
+      if (quizFields) quizFields.style.display = kind === 'quiz' ? '' : 'none';
+    };
+    document.querySelectorAll('input[name="edKind"]').forEach(r => {
+      r.onchange = syncQuizFields;
+    });
+    syncQuizFields();
+    initMarkdownEditor('sol', {});
+
     // 加载已有数据
     if (isEdit) {
       api(`/api/records/${id}`).then(it => {
@@ -500,8 +676,18 @@ const RecordsTab = {
         document.getElementById('edContent').value = it.content_md || '';
         document.getElementById('edNote').value = it.note || '';
         document.getElementById('edPinned').checked = !!it.pinned;
+        // 事项4: 题目卡的解答与 rubric 回显
+        const kind = it.kind || 'note';
+        const kr = document.querySelector(`input[name="edKind"][value="${kind}"]`);
+        if (kr) kr.checked = true;
+        const solEl = document.getElementById('solContent');
+        if (solEl) solEl.value = it.solution_md || '';
+        const rubEl = document.getElementById('edRubric');
+        if (rubEl) rubEl.value = rubricToText(it.rubric || []);
+        syncQuizFields();
         (it.image_paths || []).forEach(p => imagePaths.push(p));
         renderImageList();
+        syncAiTitleBtn();
       });
     } else {
       document.getElementById('edLearnDate').value = new Date().toISOString().slice(0, 10);
@@ -563,6 +749,10 @@ const RecordsTab = {
         content_md: document.getElementById('edContent').value,
         note: document.getElementById('edNote').value,
         pinned: document.getElementById('edPinned').checked ? 1 : 0,
+        // ---- 事项4 (错题) ----
+        kind: document.querySelector('input[name="edKind"]:checked')?.value || 'note',
+        solution_md: document.getElementById('solContent')?.value || '',
+        rubric: parseRubricText(document.getElementById('edRubric')?.value || ''),
         image_paths: imagePaths,
       };
       if (!data.title) { toast('请输入标题', 'error'); return; }

@@ -80,6 +80,16 @@ python3 run.py --port 8080 --host 0.0.0.0
 4. 若无标题，整篇作为一张卡片
 5. 勾选「自动修正」后，导入/粘贴时会自动规整格式（见下节）
 
+#### 记录列表的筛选
+
+记录页顶部可按 **关键词 / 状态 / 标签 / 学习日期区间** 组合筛选，并支持卡片视图与列表视图切换：
+
+- **标签下拉**：列出全部标签并带卡片计数（如 `#物理 (12)`），选一个即只看该标签的卡片
+- **点徽章即筛选**：卡片上的每个标签徽章都可直接点击，一键切到该标签
+- 右上角「重置」按钮清空全部筛选条件
+
+> 实现：后端 `GET /api/records/tags` 聚合标签计数，`GET /api/records?tag=` 过滤；前端 `static/js/records.js`。
+
 ### 2. Markdown 粘贴格式修正
 
 从网页、Word / PPT、PDF 或 AI 对话复制 Markdown 时，常会带入脏格式（多余空行、富文本项目符号、LaTeX 公式标记、全角字符等）。本工具内置「粘贴格式修正」，借鉴 [siyuan-plugin-text-process](https://github.com/Achuan-2/siyuan-plugin-text-process) 的粘贴处理思路，在**新增 / 编辑**和**导入**两个入口提供：
@@ -128,7 +138,18 @@ python3 run.py --port 8080 --host 0.0.0.0
 
 > 实现：后端 `app/routes/records.py` 的 `/api/records/<id>/annotations` 增删改查 + `app/db.py` 的 `annotation` 表；前端 `static/js/annotations.js`（右键菜单 / 内联高亮 / 悬浮 / 抽屉）与 `static/js/markdown_editor.js`（复用编辑器）。
 
-### 2.2 待复习列表（自由选择复习内容）
+### 2.2 速记（辅助记忆的小技巧）
+
+速记是与批注并列的第二个附属模块，专门记「怎么把它记住」，而不是知识点本身：口诀／谐音／首字母、类比、画面感、易混对比、反例。同样**不单独复习**。
+
+- **输入能力完全一致**：速记复用与新建卡片、批注同一套「格式化输入」组件——Markdown + 公式（KaTeX）、粘贴自动修正、一键修正格式、预览、高级格式选项。
+- **AI 可选生成**：配置 AI 后，速记抽屉里出现「✨ AI 生成速记」，服务端按卡片正文生成 2~3 条记忆钩子（提示词强制：不复述原文、不补充新知识、公式原样保留、类比必须标注）。**生成结果只填进输入框，由你确认后才保存**；未配置或连续失败会自动回退，入口直接消失。
+- **复习时作为回忆线索**：复习页正面（答题前）与答案面都会显示该卡的速记；记录详情页有「💡 速记 (N)」区块，卡片列表上带 `💡 N` 角标。
+- **标记来源**：每条速记记 `source`（`user` 手写 / `ai` 生成），列表里以 ✨ 标记，方便日后区分。
+
+> 实现：后端 `app/db.py` 的 `mnemonic` 表 + `app/routes/records.py` 的 `/api/records/<id>/mnemonics` 增删改查 + `app/routes/ai.py` 的 `/api/ai/mnemonic`；前端 `static/js/mnemonics.js`，AI 提示词见 `app/ai.py` 的 `MNEMONIC_SYSTEM`。
+
+### 2.3 待复习列表（自由选择复习内容）
 
 复习页右侧新增「待复习列表」，把原本只能单向推进的队列变成可自由挑选的清单：
 
@@ -144,12 +165,16 @@ python3 run.py --port 8080 --host 0.0.0.0
 1. 顶部导航点击「复习」Tab，或按 `Ctrl+R`
 2. 系统自动筛选到期卡片，按 `due` 时间排序（队列上限 500 张）
 3. 可在右侧「待复习列表」里**自由点选**要复习的卡片，或勾选后「复习选中」
-4. 看到标题后先尝试回忆，按 `Space` 或点击「显示答案」查看完整内容
-5. 根据回忆情况评分（三档）：
+4. 看到标题后先尝试回忆：
+   - **笔记卡**：正文先不显示，在复述框里用自己的话讲一遍；配置 AI 后可点「🔍 对比分析」看覆盖度 / 遗漏 / 纠错
+   - **题目卡**：正面直接显示题干，在框里写下你的解答或思路
+   - 卡片上的「💡 速记」可作为回忆线索
+5. 按 `Space` 或点击「跳过，直接看答案」显示完整内容；**答案面顶部会并排显示你刚才写的复述**（以及对比分析的覆盖度 / 遗漏 / 纠错），方便逐条对照
+6. 根据回忆情况评分（三档）：
    - **完全忘记** (快捷键 `1`)：10 分钟后重学，稳定性大幅下降
    - **记忆模糊** (快捷键 `2`)：稍后复习，间隔略增
    - **熟练掌握** (快捷键 `3`/`4`)：按 FSRS-5 计算的间隔（数日至数月）后复习
-6. 评分后自动进入下一张，完成全部队列时显示「🎉 复习完成」（可直接「添加卡片继续复习」）
+7. 评分后自动进入下一张，完成全部队列时显示「🎉 复习完成」（可直接「添加卡片继续复习」）
 
 > **FSRS-5 智能排期**：算法根据卡片当前的「稳定性 S」和「难度 D」动态计算下次复习时间，目标保留率默认 90%。同一张卡片反复熟练后，间隔会指数增长（1天→3天→8天→21天→60天→...），避免无意义重复。
 
@@ -196,20 +221,26 @@ memory_anchor/
 ├── run.py                     # 入口脚本
 ├── start.sh                   # Linux/macOS 启动器
 ├── start.bat                  # Windows 启动器
-├── requirements.txt           # Python 依赖
+├── requirements.txt           # Python 依赖（Web 应用）
+├── requirements-mcp.txt       # MCP 可选依赖（requests + mcp，仅用 MCP 时才装）
 ├── app/
 │   ├── __init__.py
 │   ├── main.py                # Flask 应用主文件
 │   ├── db.py                  # SQLite 数据库初始化
 │   ├── fsrs.py                # FSRS-5 算法实现
 │   ├── utils.py               # 通用工具函数
-│   ├── markdown_fix.py        # Markdown 粘贴格式修正
+│   ├── markdown_fix.py        # Markdown 粘贴格式修正 + 思源方言清洗
+│   ├── ai.py                  # AI 可选增强封装 (标题 / 费曼对比 / 速记提示词)
 │   ├── routes/
-│   │   ├── records.py         # 记录 CRUD + 图片 + 导入导出 + 批注 API
+│   │   ├── records.py         # 记录 CRUD + 图片 + 导入导出 + 批注/速记 API + 标签聚合
 │   │   ├── review.py          # 复习中心 API
 │   │   ├── stats.py           # 数据统计 API
+│   │   ├── ai.py              # AI 端点 (状态 / 标题 / 费曼对比 / 速记)
 │   │   ├── settings.py        # 设置 API
 │   │   └── backup.py          # 备份恢复 API
+│   ├── mcp_server/            # MCP server (stdio, 转调 HTTP API, 不直连库)
+│   │   ├── server.py          # 12 个工具定义
+│   │   └── client.py          # 轻量 HTTP 客户端
 ├── templates/
 │   └── index.html             # 单页应用入口
 ├── static/
@@ -222,6 +253,7 @@ memory_anchor/
 │   │   ├── settings.js        # 设置 Tab
 │   │   ├── markdown_editor.js # 可复用 Markdown 编辑器组件
 │   │   ├── annotations.js     # 右键批注：菜单/内联高亮/悬浮/抽屉
+│   │   ├── mnemonics.js       # 速记模块：抽屉/列表 (复用格式化输入 + AI 生成)
 │   │   └── app.js             # 主应用
 │   └── uploads/               # 上传的图片
 ├── data/
@@ -272,6 +304,16 @@ review_log (id, record_id, rating, reviewed_at, elapsed_days, scheduled_days,
             stability_before, stability_after,
             difficulty_before, difficulty_after)
 
+-- 事项4 (错题): 都由 db._ensure_columns 幂等追加, 旧库启动自动升级
+study_record 追加: kind(note|quiz), solution_md, rubric, mistake_tags
+review_log   追加: missed_points, mistake_tags
+
+-- 批注: quote 为原文快照(可空=整卡), note_md 为新理解
+annotation (id, record_id, quote, note_md, review_log_id, created_at, updated_at)
+
+-- 速记: content_md 为记忆小技巧, source=user|ai
+mnemonic (id, record_id, content_md, source, created_at, updated_at)
+
 settings (key, value)  -- JSON-encoded
 
 backup_log (id, backup_time, backup_type, file_path, file_size, note)
@@ -309,6 +351,56 @@ python3 run.py  # 会自动重建空数据库
 ```bash
 pip3 install -U -r requirements.txt
 ```
+
+### 通过 MCP 让 AI 操作记忆锚
+
+项目内置一个 stdio 型 MCP server（`mcp_server/server.py`）。它不直连数据库，而是把工具调用转成 HTTP 请求打到记忆锚的 Flask API，因此 FSRS 排程逻辑只有 Web 端这一处入口。
+
+MCP server 是独立进程，需要额外依赖（主 Web 应用不需要）：
+
+```bash
+pip3 install -r requirements-mcp.txt
+```
+
+工具集（12 个）：
+
+| 工具 | 说明 |
+|------|------|
+| `list_due_cards` | 列出今日待复习卡片（含新卡） |
+| `search_cards` | 按关键词 / 标签 / 状态 / 类型（`kind=note\|quiz`）搜索 |
+| `list_tags` | 列出全部标签及卡片计数（先摸清知识结构再筛） |
+| `get_card` | 取单张卡片全文（含复习日志、批注） |
+| `create_card` | 建卡；`kind="quiz"` 时可按题目卡建（题干 + 标准解答 + 评分点 rubric） |
+| `import_markdown` | 从 Markdown 批量建卡（按 `# ` 分卡） |
+| `quick_capture` | 思源快捕同一入口：清洗思源方言后建卡，可带来源回链 / 题目卡字段 |
+| `add_annotation` | 给卡片加批注 |
+| `add_mnemonic` / `list_mnemonics` | 给卡片加速记（记忆小技巧）/ 列出速记 |
+| `submit_rating` | 对卡片评分并推进 FSRS |
+| `stats_summary` | 学习概览统计 |
+
+`submit_rating` 仅在你明确说出评分时才应被调用——**评分必须由人完成，AI 不替你评**。
+
+**启动记忆锚**（MCP server 通过 `MEM_BASE_URL` 找到它）：
+
+```bash
+python3 run.py            # 默认 127.0.0.1:7788
+```
+
+**在任意 MCP 客户端里接入**（Claude Desktop / Cursor / 其他支持 MCP 的工具），编辑其 `mcpServers` 配置：
+
+```json
+{
+  "mcpServers": {
+    "memory-anchor": {
+      "command": "python3",
+      "args": ["/绝对路径/memory_anchor/mcp_server/server.py"],
+      "env": { "MEM_BASE_URL": "http://127.0.0.1:7788" }
+    }
+  }
+}
+```
+
+> 注意 `args` 里用 server.py 的**绝对路径**；内网/本机使用无需任何鉴权。部署定位见 TODO.md。
 
 ---
 

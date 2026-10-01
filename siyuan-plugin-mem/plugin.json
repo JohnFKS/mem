@@ -1,0 +1,27 @@
+{
+  "name": "siyuan-plugin-mem",
+  "author": "JohnFKS",
+  "url": "https://github.com/JohnFKS/mem",
+  "version": "0.1.0",
+  "minAppVersion": "3.0.0",
+  "backends": ["all"],
+  "frontends": ["desktop", "browser"],
+  "displayName": {
+    "default": "记忆锚快捕",
+    "zh_CN": "记忆锚快捕"
+  },
+  "description": {
+    "default": "选中文字 → 右键发送到记忆锚，自动生成复习卡片（单向推送，不写思源）",
+    "zh_CN": "选中文字 → 右键发送到记忆锚，自动生成复习卡片（单向推送，不写思源）"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh_CN": "README_zh_CN.md"
+  },
+  "funding": {
+    "openCollective": "",
+    "patreon": "",
+    "githubSponsor": ""
+  },
+  "keywords": ["记忆锚", "mem", "anki", "spaced-repetition", "卡片"]
+}

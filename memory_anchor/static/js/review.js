@@ -9,6 +9,12 @@ const ReviewTab = {
     preview: null,
     sessionStart: Date.now(),
     jumpTarget: null,
+    // ---- 费曼复述 + gap 分析 (事项3) ----
+    feynman: { text: '', result: null },
+    // ---- 速记 (mnemonic): 按卡片 id 缓存, 复习时作为回忆线索 ----
+    mnemonics: {},
+    // ---- 错题 (事项4): hit[i]=false 表示第 i 个得分点没拿到; tags 为错因 ----
+    quiz: { hit: [], tags: [] },
     // ---- 待复习列表 (可自由选择复习内容) ----
     selected: new Set(),      // 勾选的卡片 id
     doneIds: new Set(),       // 本次会话已评过分(非 again)的 id
@@ -521,18 +527,36 @@ const ReviewTab = {
         <div class="review-card-face">
           <h2 class="text-xl font-bold mb-3">${escapeHtml(card.title)}</h2>
           ${!this.state.showAnswer ? `
-            <div class="flex-1 flex items-center justify-center text-slate-400 text-sm py-8">
-              <button onclick="ReviewTab.showAnswerFn()" class="px-6 py-3 bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-300 rounded-lg hover:bg-brand-100 dark:hover:bg-brand-900/50 transition">
-                💡 点击显示答案内容 (Space)
-              </button>
+            <div class="flex-1 flex flex-col py-4" id="feynmanPanel">
+              ${card.kind === 'quiz' && card.content_md ? `
+                <div class="md-body mb-3 p-3 bg-slate-50 dark:bg-slate-900/30 rounded-lg anno-target" id="reviewMdBody">
+                  <div class="text-xs text-slate-400 mb-1">题目</div>
+                  ${renderMarkdown(card.content_md)}
+                </div>` : ''}
+              <div class="text-xs text-slate-400 mb-2">${card.kind === 'quiz' ? '先自己写一遍解答/思路（错题不接 AI 分析）' : '先用自己的话讲一遍 —— 写不出来正好说明这里还没懂'}</div>
+              <textarea id="feynmanText" rows="${card.kind === 'quiz' ? 4 : 5}" placeholder="${card.kind === 'quiz' ? '写下你的解答/思路…' : '用自己的话复述这个知识点…'}"
+                class="w-full px-3 py-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 resize-y">${escapeHtml(this.state.feynman.text || '')}</textarea>
+              <div class="flex items-center gap-2 mt-2">
+                <button id="feynmanAnalyzeBtn" type="button"
+                  class="px-4 py-2 bg-brand-50 dark:bg-brand-900/30 text-brand-600 dark:text-brand-300 rounded-lg hover:bg-brand-100 dark:hover:bg-brand-900/50 text-sm"
+                  style="display:${aiEnabled() && card.kind !== 'quiz' ? '' : 'none'}">🔍 对比分析</button>
+                <button onclick="ReviewTab.showAnswerFn()"
+                  class="px-4 py-2 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">跳过，直接看答案 →</button>
+              </div>
+              <div id="feynmanResult" class="mt-3"></div>
+              ${this.renderMnemonicBlock(card)}
             </div>
           ` : `
             <div class="flex-1 overflow-y-auto">
+              ${this.renderRecallBlock()}
               ${card.content_md ? `<div class="md-body mb-3 anno-target" id="reviewMdBody">${renderMarkdown(card.content_md)}</div>` : '<p class="text-sm text-slate-400 italic mb-3">(无正文内容)</p>'}
               ${images ? `<div class="space-y-2 mb-3">${images}</div>` : ''}
               ${card.note ? `<div class="text-sm p-2 bg-amber-50 dark:bg-amber-900/20 rounded">${escapeHtml(card.note)}</div>` : ''}
+              ${card.kind === 'quiz' ? this.renderQuizSection(card) : ''}
+              ${this.renderMnemonicBlock(card)}
             </div>
             <div class="mt-4 pt-4 border-t border-slate-200 dark:border-slate-700">
+              ${this.state.feynman.result ? `<div class="text-xs text-slate-400 mb-2 text-center">🤖 建议评分：<b>${escapeHtml(this.state.feynman.result.advice_rating || '')}</b>（仅建议，评分仍由你决定）</div>` : ''}
               <div class="text-xs text-slate-400 mb-2 text-center">回忆起来了吗? 选择评分 (1/2/3 键)</div>
               <div class="grid grid-cols-3 gap-2" id="answerBtns">
                 <button data-rating="again" class="review-btn p-3 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 rounded-lg border border-red-200 dark:border-red-900">
@@ -566,14 +590,102 @@ const ReviewTab = {
       });
       // 加载并高亮批注 (含右键菜单)
       this.loadAnnotations(card.id);
+      // 速记 (回忆线索)
+      this.loadMnemonics(card.id);
+      // ---- 错题 (事项4): 得分点勾选 + 错因 chips ----
+      if (card.kind === 'quiz') {
+        wrap.querySelectorAll('[data-point]').forEach(cb => {
+          cb.onchange = () => {
+            this.state.quiz.hit[+cb.dataset.point] = cb.checked;
+            this.syncQuizMistakes(card);
+          };
+        });
+        this.syncQuizMistakes(card);
+      }
+      // advice_rating 提示: 给建议的评分按钮加 ring (仅提示, 不自动评分)
+      const r = this.state.feynman.result;
+      if (r && r.advice_rating) {
+        const b = document.querySelector(`#answerBtns [data-rating="${r.advice_rating}"]`);
+        if (b) b.classList.add('ring-2', 'ring-brand-500');
+      }
     } else {
-      // 点击卡片本身也可以显示答案
+      // ---- 费曼复述面板 ----
+      const ft = document.getElementById('feynmanText');
+      if (ft) ft.addEventListener('input', () => { this.state.feynman.text = ft.value; });
+      const ab = document.getElementById('feynmanAnalyzeBtn');
+      if (ab) ab.onclick = () => this.runGapAnalysis();
+      // 渲染已保存的分析结果 (重新渲染后不丢失)
+      if (this.state.feynman.result) this.renderGapResult(this.state.feynman.result);
+      // 题目卡在正面显示题干, 题干上的批注高亮与右键菜单也要能用
+      if (document.getElementById('reviewMdBody')) this.loadAnnotations(card.id);
+      this.loadMnemonics(card.id);
+      // 点击卡片本身也可以显示答案 (复述面板内除外, 避免打字时误触)
       wrap.querySelector('.review-card-face').onclick = (e) => {
-        if (!e.target.closest('button')) this.showAnswerFn();
+        if (e.target.closest('button') || e.target.closest('#feynmanPanel')) return;
+        this.showAnswerFn();
       };
     }
+    // 速记抽屉里增删改后, 复习页的速记区块跟着刷新
+    window.__mnemonicViews = (window.__mnemonicViews || []).filter(v => v.recordId !== card.id);
+    window.__mnemonicViews.push({ recordId: card.id, redraw: () => this.loadMnemonics(card.id) });
+
     // 同步左侧列表的"当前"高亮
     this.renderQueueList();
+  },
+
+  // ---- 答案面: 把"我刚才写的复述"放在标准内容上方, 方便逐条对比 ----
+  renderRecallBlock() {
+    const text = (this.state.feynman.text || '').trim();
+    const gap = this.state.feynman.result;
+    const cover = gap ? Math.max(0, Math.min(100, gap.coverage || 0)) : null;
+    const missed = (gap && gap.missed) || [];
+    const wrong = (gap && gap.wrong) || [];
+    let gapHtml = '';
+    if (gap) {
+      gapHtml = `
+        <div class="mt-2 pt-2 border-t border-brand-200 dark:border-brand-800 text-xs">
+          <div class="flex items-center gap-2">
+            <span class="text-slate-400">覆盖度</span>
+            <div class="flex-1 h-1.5 bg-white dark:bg-slate-800 rounded overflow-hidden">
+              <div class="h-full bg-brand-500" style="width:${cover}%"></div>
+            </div>
+            <span class="font-medium">${cover}%</span>
+          </div>
+          ${missed.length ? `<div class="mt-1 text-slate-500">遗漏：${missed.map(m => escapeHtml(m)).join('；')}</div>` : ''}
+          ${wrong.length ? `<div class="mt-1 text-slate-500">纠错：${wrong.map(w => `${escapeHtml(w.claim || '')} → ${escapeHtml(w.correction || '')}`).join('；')}</div>` : ''}
+        </div>`;
+    }
+    const body = text
+      ? `<div class="md-body text-sm">${renderMarkdown(text)}</div>`
+      : '<div class="text-xs text-slate-400 italic">本次没有写复述（下次可以先写再翻答案，效果差很多）</div>';
+    return `
+      <div class="mb-3 p-3 rounded-lg border border-brand-200 dark:border-brand-800 bg-brand-50/60 dark:bg-brand-900/20">
+        <div class="text-xs text-slate-400 mb-1">🗣 我的复述（与下方标准内容对照）</div>
+        ${body}
+        ${gapHtml}
+      </div>`;
+  },
+
+  // ---- 速记: 复习时作为回忆线索展示 (缓存按卡片 id) ----
+  async loadMnemonics(cardId) {
+    try {
+      const res = await api(`/api/records/${cardId}/mnemonics`);
+      this.state.mnemonics[cardId] = (res && res.items) || [];
+    } catch (e) {
+      this.state.mnemonics[cardId] = this.state.mnemonics[cardId] || [];
+      return;
+    }
+    // 异步回来后页面可能已切到下一张, 只更新仍属于该卡的区块
+    const box = document.getElementById('reviewMnSection');
+    const cur = this.state.queue[this.state.currentIndex];
+    if (box && cur && cur.id === cardId) {
+      box.innerHTML = mnemonicsSection(this.state.mnemonics[cardId] || [], cardId);
+    }
+  },
+
+  renderMnemonicBlock(card) {
+    const items = this.state.mnemonics[card.id] || [];
+    return `<div id="reviewMnSection">${mnemonicsSection(items, card.id)}</div>`;
   },
 
   async loadPreview(cardId) {
@@ -602,13 +714,152 @@ const ReviewTab = {
   },
 
   showAnswerFn() {
+    // 翻答案前把复述框里的内容收进 state (点击卡片空白处 / 快捷键触发时也要带上)
+    const ta = document.getElementById('feynmanText');
+    if (ta) this.state.feynman.text = ta.value;
     this.state.showAnswer = true;
+    this.state.quiz = { hit: [], tags: [] };   // 进入评分阶段, 重置得分点勾选
     this.renderCurrent();
+  },
+
+  // ============ 费曼复述 + gap 分析 (事项3) ============
+  async runGapAnalysis() {
+    const card = this.state.queue[this.state.currentIndex];
+    if (!card) return;
+    const ta = document.getElementById('feynmanText');
+    const text = (ta?.value || '').trim();
+    if (!text) { toast('先写点复述再对比', 'error'); return; }
+    this.state.feynman.text = text;
+    const btn = document.getElementById('feynmanAnalyzeBtn');
+    if (btn) { btn.disabled = true; btn.textContent = '🔍 分析中…'; }
+    try {
+      const res = await api('/api/ai/gap', {
+        method: 'POST',
+        body: { record_id: card.id, user_summary: text },
+      });
+      this.state.feynman.result = res;
+      this.renderGapResult(res);
+    } catch (e) {
+      // 失败计入熔断: 连续 2 次后隐藏「对比分析」(复述框与跳过按钮仍可用)
+      const disabled = aiNoteFailure('对比分析失败: ' + e.message);
+      if (disabled && btn) btn.style.display = 'none';
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🔍 对比分析'; }
+    }
+  },
+
+  renderGapResult(res) {
+    const box = document.getElementById('feynmanResult');
+    if (!box || !res) return;
+    const cover = Math.max(0, Math.min(100, res.coverage || 0));
+    const missed = (res.missed || [])
+      .map(m => `<li>${escapeHtml(m)}</li>`).join('');
+    const wrong = (res.wrong || []).map(w => `
+      <tr>
+        <td class="pr-2 align-top text-red-500">${escapeHtml(w.claim || '')}</td>
+        <td class="align-top text-emerald-600">${escapeHtml(w.correction || '')}</td>
+      </tr>`).join('');
+    box.innerHTML = `
+      <div class="p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/30 text-sm">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-xs text-slate-400">覆盖度</span>
+          <div class="flex-1 h-2 bg-slate-200 dark:bg-slate-700 rounded overflow-hidden">
+            <div class="h-full bg-brand-500" style="width:${cover}%"></div>
+          </div>
+          <span class="text-xs font-medium">${cover}%</span>
+        </div>
+        ${missed ? `<div class="mb-2"><div class="text-xs text-slate-400 mb-1">遗漏要点</div><ul class="list-disc pl-5 text-xs space-y-0.5">${missed}</ul></div>` : ''}
+        ${wrong ? `<div class="mb-2"><div class="text-xs text-slate-400 mb-1">需要纠正</div><table class="text-xs w-full">${wrong}</table></div>` : ''}
+        ${res.comment ? `<div class="text-xs text-slate-500 mb-2">💬 ${escapeHtml(res.comment)}</div>` : ''}
+        <div class="flex items-center gap-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+          <span class="text-xs text-slate-400">建议评分：<b>${escapeHtml(res.advice_rating || '')}</b>（仅建议，评分仍由你决定）</span>
+          <div class="flex-1"></div>
+          <button id="gapSaveAnnoBtn" type="button" class="btn btn-outline text-xs">💾 存为批注</button>
+        </div>
+      </div>
+    `;
+    const sb = document.getElementById('gapSaveAnnoBtn');
+    if (sb) sb.onclick = () => this.saveGapAsAnnotation(res);
+  },
+
+  async saveGapAsAnnotation(res) {
+    const card = this.state.queue[this.state.currentIndex];
+    if (!card) return;
+    let md = `### 费曼复盘\n\n- 覆盖度: ${res.coverage || 0}%\n`;
+    if ((res.missed || []).length) {
+      md += '\n**遗漏**:\n' + res.missed.map(m => `- ${m}`).join('\n') + '\n';
+    }
+    if ((res.wrong || []).length) {
+      md += '\n**纠错**:\n' + res.wrong.map(w => `- ${w.claim} → ${w.correction}`).join('\n') + '\n';
+    }
+    if (res.comment) md += `\n> ${res.comment}\n`;
+    try {
+      await api(`/api/records/${card.id}/annotations`, {
+        method: 'POST',
+        body: { quote: '', note_md: md },
+      });
+      toast('已存为批注', 'success');
+    } catch (e) { toast('保存批注失败: ' + e.message, 'error'); }
+  },
+
+  // ============ 错题 (事项4) ============
+  renderQuizSection(card) {
+    const rubric = card.rubric || [];
+    let html = '';
+    if (card.solution_md) {
+      html += `<div class="md-body mb-3 p-3 bg-slate-50 dark:bg-slate-900/30 rounded-lg">
+        <div class="text-xs text-slate-400 mb-1">标准解答</div>
+        ${renderMarkdown(card.solution_md)}
+      </div>`;
+    }
+    if (rubric.length) {
+      const rows = rubric.map((r, i) => `
+        <label class="flex items-start gap-2 text-sm">
+          <input type="checkbox" data-point="${i}" ${this.state.quiz.hit[i] === false ? '' : 'checked'} class="mt-0.5 accent-brand-600">
+          <span class="flex-1">${escapeHtml(r.point || '')}</span>
+          <span class="text-xs text-slate-400">${r.score} 分</span>
+        </label>`).join('');
+      html += `<div class="mb-3">
+        <div class="text-xs text-slate-400 mb-1">得分点（默认全选 = 拿到分，取消勾选表示没拿到）</div>
+        <div class="space-y-1">${rows}</div>
+      </div>`;
+    }
+    html += `<div id="quizMistakeWrap"></div>`;
+    return html;
+  },
+
+  syncQuizMistakes(card) {
+    const wrap = document.getElementById('quizMistakeWrap');
+    if (!wrap) return;
+    const rubric = card.rubric || [];
+    const missed = rubric.map((_, i) => i).filter(i => this.state.quiz.hit[i] === false);
+    if (!missed.length) { wrap.innerHTML = ''; return; }
+    const chips = Object.keys(MISTAKE_TAGS).map(k => `
+      <button type="button" data-tag="${k}"
+        class="px-2 py-1 text-xs rounded border ${this.state.quiz.tags.includes(k)
+          ? 'bg-brand-50 dark:bg-brand-900/30 border-brand-400 text-brand-700 dark:text-brand-300'
+          : 'border-slate-200 dark:border-slate-700 text-slate-500'}">${MISTAKE_TAGS[k]}</button>`).join('');
+    wrap.innerHTML = `
+      <div class="mb-2">
+        <div class="text-xs text-slate-400 mb-1">有 ${missed.length} 个得分点未拿到，请选择错因（至少 1 个才能评分）</div>
+        <div class="flex flex-wrap gap-1">${chips}</div>
+      </div>`;
+    wrap.querySelectorAll('[data-tag]').forEach(b => {
+      b.onclick = () => {
+        const t = b.dataset.tag;
+        const i = this.state.quiz.tags.indexOf(t);
+        if (i >= 0) this.state.quiz.tags.splice(i, 1);
+        else this.state.quiz.tags.push(t);
+        this.syncQuizMistakes(card);
+      };
+    });
   },
 
   skipCard() {
     this.state.currentIndex++;
     this.state.showAnswer = false;
+    this.state.feynman = { text: '', result: null };
+    this.state.quiz = { hit: [], tags: [] };
     this.renderCurrent();
     this.renderSidebar();
   },
@@ -616,10 +867,22 @@ const ReviewTab = {
   async answer(rating) {
     const card = this.state.queue[this.state.currentIndex];
     if (!card) return;
+    // ---- 错题 (事项4): 随评分提交漏掉的得分点与错因 ----
+    const body = { rating };
+    if (card.kind === 'quiz') {
+      const rubric = card.rubric || [];
+      const missed = rubric.map((_, i) => i).filter(i => this.state.quiz.hit[i] === false);
+      if (missed.length && (this.state.quiz.tags || []).length === 0) {
+        toast('有未拿到的得分点，请先选择错因', 'error');
+        return;
+      }
+      body.missed_points = missed;
+      body.mistake_tags = this.state.quiz.tags || [];
+    }
     try {
       const res = await api(`/api/review/${card.id}/answer`, {
         method: 'POST',
-        body: { rating },
+        body,
       });
       // 更新会话统计
       this.state.sessionStats.reviewed++;
@@ -639,6 +902,8 @@ const ReviewTab = {
         this.state.currentIndex++;
       }
       this.state.showAnswer = false;
+      this.state.feynman = { text: '', result: null };   // 翻到下一张清空复述
+      this.state.quiz = { hit: [], tags: [] };
       this.renderCurrent();
       this.renderSidebar();
       this.refreshBadge();

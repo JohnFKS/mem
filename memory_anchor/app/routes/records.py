@@ -10,6 +10,8 @@ from flask import Blueprint, request, jsonify, send_file, current_app
 from app.db import get_conn, UPLOAD_DIR, init_db
 from app.utils import now_ts, today_iso, save_uploaded_image, parse_tags_str
 from app.fsrs import fsrs
+# 事项5: 思源方言清洗 (延迟导入避免与 markdown_fix 的循环依赖风险, 这里无循环故直接导入)
+from app.markdown_fix import clean_siyuan_dialect
 
 bp = Blueprint("records", __name__, url_prefix="/api/records")
 
@@ -27,7 +29,33 @@ def _row_to_dict(row) -> dict:
         d["image_paths"] = json.loads(d.get("image_paths") or "[]")
     except (ValueError, TypeError):
         d["image_paths"] = []
+    # ---- 事项4 (错题): JSON 列解析为数组, 失败回退 [] ----
+    for col in ("rubric", "mistake_tags"):
+        try:
+            d[col] = json.loads(d.get(col) or "[]")
+        except (ValueError, TypeError):
+            d[col] = []
+    d["kind"] = d.get("kind") or "note"
     return d
+
+
+def _dump_json_field(value, default="[]") -> str:
+    """事项4: 把 list / dict / 已是 JSON 的字符串统一序列化为存库用的 JSON 字符串。"""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return default
+        try:
+            json.loads(s)      # 已是合法 JSON -> 原样存
+            return s
+        except (ValueError, TypeError):
+            return default
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return default
 
 
 def _annotation_to_dict(row) -> dict:
@@ -36,6 +64,15 @@ def _annotation_to_dict(row) -> dict:
         return None
     d = dict(row)
     return d
+
+
+def _get_mnemonics(conn, rid: int) -> list:
+    """速记列表 (按创建时间正序, 便于阅读)"""
+    rows = conn.execute(
+        "SELECT * FROM mnemonic WHERE record_id = ? ORDER BY created_at ASC, id ASC",
+        (rid,),
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _get_annotations(conn, rid: int) -> list:
@@ -54,6 +91,7 @@ def list_records():
     date_from = request.args.get("date_from", "")
     date_to = request.args.get("date_to", "")
     state = request.args.get("state", "")
+    kind = request.args.get("kind", "").strip()      # 事项4: note | quiz
     pinned_only = request.args.get("pinned", "false").lower() == "true"
     limit = min(int(request.args.get("limit", "500")), 5000)
 
@@ -75,6 +113,9 @@ def list_records():
     if state:
         sql += " AND state = ?"
         args.append(state)
+    if kind:
+        sql += " AND COALESCE(kind, 'note') = ?"
+        args.append(kind)
     if pinned_only:
         sql += " AND pinned = 1"
     sql += " ORDER BY pinned DESC, due ASC, created_at DESC LIMIT ?"
@@ -82,7 +123,37 @@ def list_records():
 
     with get_conn() as conn:
         rows = conn.execute(sql, args).fetchall()
-    return jsonify({"items": [_row_to_dict(r) for r in rows], "total": len(rows)})
+        # 速记条数一次性聚合 (避免列表里 N+1 查询), 供卡片展示 💡 角标
+        m_counts = {
+            r["record_id"]: r["c"]
+            for r in conn.execute(
+                "SELECT record_id, COUNT(*) AS c FROM mnemonic GROUP BY record_id"
+            ).fetchall()
+        }
+    items = [_row_to_dict(r) for r in rows]
+    for it in items:
+        it["mnemonic_count"] = m_counts.get(it["id"], 0)
+    return jsonify({"items": items, "total": len(items)})
+
+
+@bp.route("/tags", methods=["GET"])
+def list_tags():
+    """全部标签及卡片计数 (供主页标签筛选下拉使用)。按计数降序、名称升序。"""
+    with get_conn() as conn:
+        rows = conn.execute("SELECT tags FROM study_record").fetchall()
+    counter = {}
+    for r in rows:
+        try:
+            tags = json.loads(r["tags"] or "[]")
+        except (ValueError, TypeError):
+            tags = []
+        for t in tags:
+            if not t:
+                continue
+            counter[t] = counter.get(t, 0) + 1
+    items = [{"tag": t, "count": c} for t, c in counter.items()]
+    items.sort(key=lambda x: (-x["count"], x["tag"]))
+    return jsonify({"items": items, "total": len(items)})
 
 
 @bp.route("/<int:rid>", methods=["GET"])
@@ -97,9 +168,11 @@ def get_record(rid: int):
             (rid,),
         ).fetchall()
         annotations = _get_annotations(conn, rid)
+        mnemonics = _get_mnemonics(conn, rid)
     out = _row_to_dict(row)
     out["review_logs"] = [dict(l) for l in logs]
     out["annotations"] = annotations
+    out["mnemonics"] = mnemonics
     return jsonify(out)
 
 
@@ -169,6 +242,133 @@ def delete_annotation(rid: int, aid: int):
     return jsonify({"ok": True})
 
 
+@bp.route("/<int:rid>/mnemonics", methods=["GET"])
+def list_mnemonics(rid: int):
+    """列出某张卡的速记"""
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM study_record WHERE id = ?", (rid,)).fetchone()
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        items = _get_mnemonics(conn, rid)
+    return jsonify({"items": items, "total": len(items)})
+
+
+@bp.route("/<int:rid>/mnemonics", methods=["POST"])
+def create_mnemonic(rid: int):
+    """新增速记。Body: {content_md: str, source?: "user"|"ai"}"""
+    data = request.get_json(force=True, silent=True) or {}
+    with get_conn() as conn:
+        row = conn.execute("SELECT id FROM study_record WHERE id = ?", (rid,)).fetchone()
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        content = (data.get("content_md") or "").strip()
+        if not content:
+            return jsonify({"error": "content_md required"}), 400
+        source = (data.get("source") or "user").strip()
+        if source not in ("user", "ai"):
+            source = "user"
+        now = now_ts()
+        cur = conn.execute(
+            """INSERT INTO mnemonic (record_id, content_md, source, created_at, updated_at)
+               VALUES (?,?,?,?,?)""",
+            (rid, content, source, now, now),
+        )
+        new = conn.execute("SELECT * FROM mnemonic WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify(dict(new)), 201
+
+
+@bp.route("/<int:rid>/mnemonics/<int:mid>", methods=["PUT"])
+def update_mnemonic(rid: int, mid: int):
+    data = request.get_json(force=True, silent=True) or {}
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM mnemonic WHERE id = ? AND record_id = ?", (mid, rid)
+        ).fetchone()
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        content = data.get("content_md", row["content_md"])
+        if isinstance(content, str):
+            content = content.strip()
+        source = data.get("source", row["source"])
+        if source not in ("user", "ai"):
+            source = row["source"]
+        conn.execute(
+            "UPDATE mnemonic SET content_md=?, source=?, updated_at=? WHERE id=?",
+            (content, source, now_ts(), mid),
+        )
+        new = conn.execute("SELECT * FROM mnemonic WHERE id = ?", (mid,)).fetchone()
+    return jsonify(dict(new))
+
+
+@bp.route("/<int:rid>/mnemonics/<int:mid>", methods=["DELETE"])
+def delete_mnemonic(rid: int, mid: int):
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM mnemonic WHERE id = ? AND record_id = ?", (mid, rid)
+        ).fetchone()
+        if row is None:
+            return jsonify({"error": "not found"}), 404
+        conn.execute("DELETE FROM mnemonic WHERE id = ?", (mid,))
+    return jsonify({"ok": True})
+
+
+def _create_row(data: dict) -> dict:
+    """建卡核心逻辑 (create_record 与 quick_capture 共用, 保证行为一致)。
+
+    title 必填由调用方保证; 这里不再做 400 校验, 缺 title 抛 ValueError。
+    """
+    title = (data.get("title") or "").strip()
+    if not title:
+        raise ValueError("title required")
+
+    tags_raw = data.get("tags", [])
+    if isinstance(tags_raw, str):
+        tags = parse_tags_str(tags_raw)
+    else:
+        tags = list(tags_raw)
+
+    image_paths = data.get("image_paths", [])
+    if isinstance(image_paths, str):
+        try:
+            image_paths = json.loads(image_paths)
+        except (ValueError, TypeError):
+            image_paths = parse_tags_str(image_paths)
+
+    now = now_ts()
+    learn_date = data.get("learn_date") or today_iso()
+    due = now  # 新卡默认立即到期
+
+    with get_conn() as conn:
+        cur = conn.execute(
+            """INSERT INTO study_record
+            (title, tags, content_md, image_paths, learn_date, note,
+             state, stability, difficulty, reps, lapses, last_review, due,
+             priority, pinned, created_at, updated_at,
+             kind, solution_md, rubric, mistake_tags)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                title,
+                json.dumps(tags, ensure_ascii=False),
+                data.get("content_md", ""),
+                json.dumps(image_paths),
+                learn_date,
+                data.get("note", ""),
+                "new", 0, 0, 0, 0, 0, due,
+                int(data.get("priority", 0) or 0),
+                int(data.get("pinned", 0) or 0),
+                now, now,
+                # ---- 事项4 (错题) ----
+                (data.get("kind") or "note"),
+                data.get("solution_md", "") or "",
+                _dump_json_field(data.get("rubric")),
+                _dump_json_field(data.get("mistake_tags")),
+            ),
+        )
+        rid = cur.lastrowid
+        row = conn.execute("SELECT * FROM study_record WHERE id = ?", (rid,)).fetchone()
+    return _row_to_dict(row)
+
+
 @bp.route("", methods=["POST"])
 def create_record():
     """新增学习记录
@@ -208,46 +408,64 @@ def create_record():
     if not title:
         return jsonify({"error": "title required"}), 400
 
-    tags_raw = data.get("tags", [])
-    if isinstance(tags_raw, str):
-        tags = parse_tags_str(tags_raw)
-    else:
-        tags = list(tags_raw)
+    row = _create_row(data)
+    return jsonify(row), 201
 
-    image_paths = data.get("image_paths", [])
-    if isinstance(image_paths, str):
-        try:
-            image_paths = json.loads(image_paths)
-        except (ValueError, TypeError):
-            image_paths = parse_tags_str(image_paths)
 
-    now = now_ts()
-    learn_date = data.get("learn_date") or today_iso()
-    due = now  # 新卡默认立即到期
+@bp.route("/quick-capture", methods=["POST"])
+def quick_capture():
+    """思源快速捕捉: 选中文字 -> 一键建卡 (单向推送, 不写思源、不做同步)。
 
-    with get_conn() as conn:
-        cur = conn.execute(
-            """INSERT INTO study_record
-            (title, tags, content_md, image_paths, learn_date, note,
-             state, stability, difficulty, reps, lapses, last_review, due,
-             priority, pinned, created_at, updated_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                title,
-                json.dumps(tags, ensure_ascii=False),
-                data.get("content_md", ""),
-                json.dumps(image_paths),
-                learn_date,
-                data.get("note", ""),
-                "new", 0, 0, 0, 0, 0, due,
-                int(data.get("priority", 0) or 0),
-                int(data.get("pinned", 0) or 0),
-                now, now,
-            ),
-        )
-        rid = cur.lastrowid
-        row = conn.execute("SELECT * FROM study_record WHERE id = ?", (rid,)).fetchone()
-    return jsonify(_row_to_dict(row)), 201
+    Body: {"content_md": "...", "title": "", "tags": ["思源"],
+           "source": {"doc_name": "笔记标题", "block_id": "2024...", "url": "siyuan://blocks/..."},
+           "kind": "note"|"quiz", "solution_md": "...", "rubric": [...]}
+    逻辑: 清洗思源方言 -> 标题缺省取首行 -> 追加来源回链 -> 复用 _create_row 建卡
+    kind=quiz 时按题目卡建卡 (题干=content_md, 标准解答=solution_md)。
+    """
+    data = request.get_json(force=True) or {}
+    content = (data.get("content_md") or "").strip()
+    if not content:
+        return jsonify({"error": "content_md required"}), 400
+
+    # 1) 清洗思源 kramdown 方言 (块引/IAL/标签/嵌入块)
+    content = clean_siyuan_dialect(content)
+    if not content:
+        return jsonify({"error": "content_md empty after clean"}), 400
+
+    # 2) 标题: 显式传入 > 正文首个非空行(去 # 号) > 兜底时间戳
+    title = (data.get("title") or "").strip()
+    if not title:
+        for line in content.split("\n"):
+            line = line.strip().lstrip("#").strip()
+            if line:
+                title = line[:60]
+                break
+    if not title:
+        title = "思源快捕 " + time.strftime("%Y-%m-%d %H:%M")
+
+    # 3) 来源回链 (可选)
+    src = data.get("source") or {}
+    url = (src.get("url") or "").strip()
+    doc_name = (src.get("doc_name") or "").strip() or "思源"
+    if url:
+        content += f"\n\n> 来源：[{doc_name}]({url})"
+
+    # 4) 建卡 (与 POST /api/records 完全同一套逻辑; title 已在第 2 步保证非空)
+    row = _create_row({
+        "title": title,
+        "content_md": content,
+        "tags": data.get("tags") or [],
+        "note": data.get("note", ""),
+        "learn_date": data.get("learn_date") or today_iso(),
+        "priority": data.get("priority", 0),
+        "pinned": data.get("pinned", 0),
+        # ---- 题目卡快捕 (思源插件「作为题目发送」/ MCP quick_capture) ----
+        "kind": data.get("kind") or "note",
+        "solution_md": data.get("solution_md", ""),
+        "rubric": data.get("rubric"),
+    })
+    return jsonify({"id": row["id"], "title": row["title"],
+                    "kind": row["kind"]}), 201
 
 
 @bp.route("/<int:rid>", methods=["PUT"])
@@ -304,15 +522,27 @@ def update_record(rid: int):
         else:
             image_paths = json.loads(row["image_paths"] or "[]")
 
+        # ---- 事项4 (错题): 可选的 kind / solution_md / rubric / mistake_tags ----
+        kind = data.get("kind", row["kind"] if "kind" in row.keys() else "note") or "note"
+        solution_md = data.get("solution_md",
+                               row["solution_md"] if "solution_md" in row.keys() else "")
+        rubric = _dump_json_field(
+            data.get("rubric", row["rubric"] if "rubric" in row.keys() else None))
+        mistake_tags = _dump_json_field(
+            data.get("mistake_tags", row["mistake_tags"] if "mistake_tags" in row.keys() else None))
+
         conn.execute(
             """UPDATE study_record SET
                 title=?, tags=?, content_md=?, image_paths=?,
-                learn_date=?, note=?, priority=?, pinned=?, updated_at=?
+                learn_date=?, note=?, priority=?, pinned=?, updated_at=?,
+                kind=?, solution_md=?, rubric=?, mistake_tags=?
                WHERE id=?""",
             (
                 title, json.dumps(tags, ensure_ascii=False), content_md,
                 json.dumps(image_paths), learn_date, note, priority, pinned,
-                now_ts(), rid,
+                now_ts(),
+                kind, solution_md or "", rubric, mistake_tags,
+                rid,
             ),
         )
         row = conn.execute("SELECT * FROM study_record WHERE id = ?", (rid,)).fetchone()

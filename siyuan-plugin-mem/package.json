@@ -1,0 +1,22 @@
+{
+  "name": "siyuan-plugin-mem",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "思源笔记 → 记忆锚 快速捕捉插件",
+  "repository": "https://github.com/JohnFKS/mem",
+  "author": "JohnFKS",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite build --watch",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "siyuan": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vite": "^5.2.0",
+    "vite-plugin-static-copy": "^1.0.0"
+  }
+}

@@ -332,6 +332,73 @@ function insertAtCursor(el, text) {
   el.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
+// ---------- 事项4 (错题): 错因枚举, 前端写死为多选 chips ----------
+const MISTAKE_TAGS = {
+  concept: '概念不清', calc: '计算失误', step: '步骤遗漏',
+  read: '审题偏差', memory: '记错结论', careless: '粗心',
+};
+window.MISTAKE_TAGS = MISTAKE_TAGS;
+window.mistakeTagLabel = (k) => MISTAKE_TAGS[k] || k;
+
+// rubric 行文本 <-> JSON 互转 (编辑器里用 "分值|要点" 一行一个)
+window.parseRubricText = function (text) {
+  return (text || '').split('\n').map(l => l.trim()).filter(Boolean).map(line => {
+    const m = line.match(/^(\d+(?:\.\d+)?)\s*[|｜]\s*(.*)$/);
+    if (m) return { score: parseFloat(m[1]), point: m[2].trim() };
+    return { score: 1, point: line };
+  }).filter(r => r.point);
+};
+window.rubricToText = function (rubric) {
+  return (rubric || []).map(r => `${r.score}|${r.point}`).join('\n');
+};
+
+// ---------- AI 可选增强: 三态开关与自动回退 (全局共享) ----------
+// 关闭 (未配置) -> AI 入口不渲染; 可用 -> 正常显示; 回退 (连续失败>=2) -> 本会话禁用。
+const aiState = { configured: false, disabled: false, failCount: 0 };
+window.aiState = aiState;
+
+// 拉取 AI 配置状态。ping=true 时做一次连通测试 (设置页用)。
+async function refreshAiState({ ping = false } = {}) {
+  try {
+    const res = await api(`/api/ai/status${ping ? '?ping=1' : ''}`);
+    aiState.configured = !!res.configured;
+    if (ping && res.ping_ok === false) aiState.disabled = true;
+    if (ping && res.ping_ok === true) { aiState.disabled = false; aiState.failCount = 0; }
+  } catch (e) {
+    aiState.configured = false;
+  }
+  return aiState;
+}
+window.refreshAiState = refreshAiState;
+
+// 是否应渲染 AI 入口
+function aiEnabled() {
+  return aiState.configured && !aiState.disabled;
+}
+window.aiEnabled = aiEnabled;
+
+// 记录一次 AI 调用失败; 连续 2 次触发熔断 (避免每张卡都干等超时)
+function aiNoteFailure(msg) {
+  aiState.failCount += 1;
+  if (aiState.failCount >= 2 && !aiState.disabled) {
+    aiState.disabled = true;
+    toast('AI 暂不可用，已自动回退', 'error');
+  } else if (msg) {
+    toast(msg, 'error');
+  }
+  return aiState.disabled;
+}
+window.aiNoteFailure = aiNoteFailure;
+
+// 把页面上所有 AI 入口 (data-ai="1") 按当前状态显示/隐藏
+function syncAiEntries(root) {
+  const scope = root || document;
+  scope.querySelectorAll('[data-ai="1"]').forEach(el => {
+    el.style.display = aiEnabled() ? '' : 'none';
+  });
+}
+window.syncAiEntries = syncAiEntries;
+
 // 给文本框绑定"粘贴时自动修正格式": 拦截纯文本粘贴, 经后端修正后再插入
 function bindPasteFormat(textarea, getOptions) {
   if (!textarea) return;

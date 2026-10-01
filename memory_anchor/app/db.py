@@ -104,6 +104,21 @@ CREATE TABLE IF NOT EXISTS annotation (
     FOREIGN KEY (record_id) REFERENCES study_record(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_annotation_record ON annotation(record_id);
+
+-- 速记: 与批注并列的另一个附属模块, 记"方便记忆的小技巧"(口诀 / 谐音 / 类比 / 图像化 / 反例)。
+--   content_md : 速记正文 (Markdown + 公式), 由用户手写或 AI 生成
+--   source     : user | ai  —— 只作展示用, 不影响任何排程
+-- 同样不单独复习, 卡片删除时级联删除。
+CREATE TABLE IF NOT EXISTS mnemonic (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    record_id       INTEGER NOT NULL,
+    content_md      TEXT NOT NULL DEFAULT '',
+    source          TEXT NOT NULL DEFAULT 'user',       -- user | ai
+    created_at      REAL NOT NULL,
+    updated_at      REAL NOT NULL,
+    FOREIGN KEY (record_id) REFERENCES study_record(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_mnemonic_record ON mnemonic(record_id);
 """
 
 
@@ -124,10 +139,39 @@ DEFAULT_SETTINGS = {
 }
 
 
+def _ensure_columns(conn, table: str, col_defs: dict):
+    """幂等加列: col_defs = {列名: "TEXT NOT NULL DEFAULT ''"}, 缺哪列补哪列。
+
+    旧库升级靠这里——SQLite 的 ALTER TABLE ADD COLUMN 不是幂等的, 必须先查 PRAGMA。
+    """
+    existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, ddl in col_defs.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
+# 事项4 (错题): 已有表需要追加的列。新库由 SCHEMA_SQL 直接建好也可, 这里兜底保证一致。
+EXTRA_COLUMNS = {
+    "study_record": {
+        "kind": "TEXT NOT NULL DEFAULT 'note'",          # note | quiz
+        "solution_md": "TEXT NOT NULL DEFAULT ''",        # 标准解答
+        "rubric": "TEXT NOT NULL DEFAULT ''",             # JSON [{"score":3,"point":"..."}]
+        "mistake_tags": "TEXT NOT NULL DEFAULT '[]'",     # 最近一次错因 JSON 数组
+    },
+    "review_log": {
+        "missed_points": "TEXT NOT NULL DEFAULT ''",      # JSON 数组, 未拿到的得分点下标
+        "mistake_tags": "TEXT NOT NULL DEFAULT '[]'",     # 本次错因
+    },
+}
+
+
 def init_db():
-    """初始化数据库表 + 默认设置"""
+    """初始化数据库表 + 默认设置 + 幂等加列(旧库自动升级)"""
     with get_conn() as conn:
         conn.executescript(SCHEMA_SQL)
+        # 幂等加列: 旧库自动升级, 新库无影响
+        for table, cols in EXTRA_COLUMNS.items():
+            _ensure_columns(conn, table, cols)
         # 写入默认设置 (只在不存在时写入)
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute(

@@ -38,12 +38,14 @@ from app.routes.review import bp as review_bp
 from app.routes.stats import bp as stats_bp
 from app.routes.settings import bp as settings_bp
 from app.routes.backup import bp as backup_bp
+from app.routes.ai import bp as ai_bp
 
 app.register_blueprint(records_bp)
 app.register_blueprint(review_bp)
 app.register_blueprint(stats_bp)
 app.register_blueprint(settings_bp)
 app.register_blueprint(backup_bp)
+app.register_blueprint(ai_bp)
 
 
 # ---------------- 页面路由 ----------------
@@ -94,6 +96,23 @@ def _maybe_auto_backup():
             auto_backup_check()
     except Exception as e:
         print(f"[auto_backup] failed: {e}", file=sys.stderr)
+
+
+# ---------------- CORS (内网/本机, 暂不做鉴权) ----------------
+# 思源笔记界面跑在 127.0.0.1:6806, 插件 fetch 到记忆锚是跨域请求, 需要放行。
+# 部署定位为内网, 故 Origin 全放行; 公网化时必须改成白名单, 见 TODO.md 暂缓区。
+@app.after_request
+def _add_cors(resp):
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+    return resp
+
+
+@app.route("/<path:p>", methods=["OPTIONS"])
+def _cors_preflight(p):
+    """统一处理 OPTIONS 预检"""
+    return ("", 204)
 
 
 @app.errorhandler(413)

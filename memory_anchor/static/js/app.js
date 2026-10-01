@@ -10,6 +10,8 @@ Object.assign(window.App, {
   async init() {
     initMarkdown();
     await loadSettings();
+    // AI 是可选增强: 拉取一次配置状态, 决定各 Tab 是否渲染 AI 入口
+    await refreshAiState();
     // 从 URL 决定初始 tab
     const path = window.location.pathname.replace('/', '');
     if (['records', 'review', 'stats', 'settings'].includes(path)) {

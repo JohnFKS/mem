@@ -23,6 +23,8 @@ def update_settings():
         "auto_backup", "backup_interval_days",
         "daily_target_new", "daily_target_review",
         "quiet_hours_start", "quiet_hours_end",
+        # AI 可选增强 (见 app/ai.py): 三个键均非空才算已配置
+        "ai_base_url", "ai_api_key", "ai_model",
     }
     for k, v in data.items():
         if k in allowed:
