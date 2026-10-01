@@ -212,11 +212,12 @@ def _looks_like_sse(text: str) -> bool:
     return t.startswith("data:") or "\ndata:" in t or "data: {" in t
 
 
-def _parse_sse(text: str) -> str:
-    """把 SSE 流式响应聚合成完整文本。
+def _parse_sse(text: str) -> tuple:
+    """把 SSE 流式响应聚合成完整文本, 返回 (content, finish_reason)。
 
     有些 OpenAI 兼容网关/中转无视 stream=false, 一律按 SSE 返回; 这里兼容它,
-    把所有 chunk 的 delta.content 拼起来。
+    把所有 chunk 的 delta.content 拼起来, 并记住最后一个非空的 finish_reason
+    (用它判断回答是不是被 max_tokens 掐断了)。
     """
     payloads = []
     for line in (text or "").splitlines():
@@ -230,6 +231,7 @@ def _parse_sse(text: str) -> str:
         payloads = re.findall(r"data:\s*(\{.*?\})(?=\s*(?:data:|$))", text or "", re.S)
 
     out = []
+    finish = None
     for p in payloads:
         if p in ("[DONE]", "DONE"):
             break
@@ -240,6 +242,9 @@ def _parse_sse(text: str) -> str:
         for ch in (obj.get("choices") or []):
             if not isinstance(ch, dict):
                 continue
+            fr = ch.get("finish_reason")
+            if isinstance(fr, str) and fr:
+                finish = fr
             delta = ch.get("delta") or {}
             piece = delta.get("content") if isinstance(delta, dict) else None
             if not piece:
@@ -250,7 +255,7 @@ def _parse_sse(text: str) -> str:
                 for sub in piece:
                     if isinstance(sub, dict) and isinstance(sub.get("text"), str):
                         out.append(sub["text"])
-    return "".join(out)
+    return "".join(out), finish
 
 
 def _http_diagnose(status: int, text: str) -> tuple:
@@ -349,21 +354,32 @@ def chat(messages: list, max_tokens: int = 200, json_mode: bool = False,
     sent = _merge_messages(messages) if any(
         (m or {}).get("role") == "system" for m in messages or []) else list(messages or [])
     try:
-        content = _request_once(sent, max_tokens, json_mode, timeout, cfg)
+        content, finish = _request_once(sent, max_tokens, json_mode, timeout, cfg)
     except AIError as e:
         # 网关不支持 response_format=json_object 时, 去掉它重试一次
         if json_mode and (e.detail or {}).get("status") == 400:
             body = (e.detail.get("body") or "") + (e.detail.get("reason") or "")
             if re.search(r"response_format|json_object|json_schema", body, re.I):
                 logger.warning("response_format 不被支持, 去掉后重试")
-                return _request_once(sent, max_tokens, False, timeout, cfg)
+                again, _ = _request_once(sent, max_tokens, False, timeout, cfg)
+                return again
         raise
+    if finish == "length":
+        # 回答被 max_tokens 掐断了: 加码再要一次 (完整的那个更长就用完整的)
+        bigger = max(int(max_tokens) * 4, 800)
+        logger.warning("回答被 max_tokens 掐断(finish_reason=length), 用 %s 重试", bigger)
+        try:
+            full, _ = _request_once(sent, bigger, json_mode, timeout, cfg)
+        except AIError:
+            return content
+        if full and len(full) > len(content):
+            return full
     if fallback and _looks_like_meta_reply(content):
         logger.warning("返回内容疑似在回复指令(%s)，换一种说法再要一次", content[:60])
         retry = [{"role": "user",
                   "content": sent[0]["content"] + "\n\n直接给出结果，不要提问、不要寒暄。"}]
         try:
-            again = _request_once(retry, max_tokens, json_mode, timeout, cfg)
+            again, _ = _request_once(retry, max_tokens, json_mode, timeout, cfg)
         except AIError:
             return content          # 重试失败就用第一次的结果, 不把错误抛上去
         if again and again.strip():
@@ -372,8 +388,11 @@ def chat(messages: list, max_tokens: int = 200, json_mode: bool = False,
 
 
 def _request_once(messages: list, max_tokens: int, json_mode: bool,
-                  timeout: float, cfg: dict = None) -> str:
-    """单次 /chat/completions 请求 + 响应解析 (chat 的编排会调用它一到两次)。"""
+                  timeout: float, cfg: dict = None) -> tuple:
+    """单次 /chat/completions 请求 + 响应解析, 返回 (content, finish_reason)。
+
+    chat 的编排会调用它一到两次 (response_format 不支持 / 回答被 max_tokens 掐断时重试)。
+    """
     c = cfg or _cfg()
     if not (c["base_url"] and c["api_key"] and c["model"]):
         raise AIError("AI 未配置，功能已关闭",
@@ -424,9 +443,9 @@ def _request_once(messages: list, max_tokens: int, json_mode: bool,
 
     # 1) 流式: 部分网关无视 stream=false, 一律按 SSE 返回, 这里把 chunk 拼起来
     if "text/event-stream" in ctype or _looks_like_sse(text):
-        content = _parse_sse(text)
+        content, finish = _parse_sse(text)
         if content.strip():
-            return content
+            return content, finish
         detail = dict(common, kind="parse", elapsed_ms=elapsed,
                       reason="服务端以 SSE 流式返回，但聚合后没有拿到任何文本内容",
                       hint="网关强制走了流式且没有回传内容（或只回了 role 没有 content）。"
@@ -438,16 +457,17 @@ def _request_once(messages: list, max_tokens: int, json_mode: bool,
     # 2) 常规 JSON
     try:
         data = json.loads(text)
-        return data["choices"][0]["message"]["content"]
-    except (ValueError, KeyError, IndexError) as e:
+        ch = (data.get("choices") or [{}])[0]
+        return ch["message"]["content"], (ch.get("finish_reason") or "")
+    except (ValueError, KeyError, IndexError, TypeError) as e:
         # 有些实现把单个 chunk 当 JSON 直接回 (object=chat.completion.chunk)
         chunk_txt = ""
         try:
-            chunk_txt = _parse_sse("data: " + text)
+            chunk_txt, _ = _parse_sse("data: " + text)
         except Exception:
             chunk_txt = ""
         if chunk_txt.strip():
-            return chunk_txt
+            return chunk_txt, ""
         reason = f"响应不是预期的 OpenAI 结构（{type(e).__name__}）"
         hint = "接口返回的不是 OpenAI 兼容格式。确认 Base URL 指向的是 /v1，" \
                "且没有被网关/登录页拦截（响应是不是一段 HTML？）。"
@@ -466,6 +486,23 @@ TITLE_SYSTEM = (
     '- 不要"关于""浅谈"等废话前缀\n'
     "- 只输出标题本身，不要任何解释或引号"
 )
+
+
+def _clip(text: str, limit: int, ellipsis: bool = True) -> str:
+    """超长时在最后一个句读处收尾, 而不是硬截在半句话中间。
+
+    保留至少 60% 的内容; 实在找不到断点才硬截。
+    """
+    t = (text or "").strip()
+    if len(t) <= limit:
+        return t
+    head = t[:limit]
+    cut = 0
+    for m in re.finditer(r"[。！？!?；;\n]|，|、| ", head):
+        if m.end() >= limit * 0.6:
+            cut = m.end()
+    out = head[:cut].rstrip(" ，,、；;：:") if cut else head.rstrip()
+    return (out + "…") if ellipsis else out
 
 
 def _tidy_title(raw: str) -> str:
@@ -488,7 +525,7 @@ def _tidy_title(raw: str) -> str:
     if not t:
         return ""
     if len(t) > MAX_TITLE_LEN:
-        t = t[:MAX_TITLE_LEN]
+        t = _clip(t, MAX_TITLE_LEN, ellipsis=False)
     if len(t) > 24:
         # 括号/冒号前通常是正题: "X（Lagrange …）是……" -> "X"
         m = re.match(r"^(.{3,20}?)[（(【:：]", t)
@@ -524,7 +561,7 @@ def generate_title(content_md: str) -> str:
         {"role": "system", "content": TITLE_SYSTEM},
         {"role": "user", "content": text},
     ]
-    raw = chat(messages, max_tokens=50, timeout=_timeout())
+    raw = chat(messages, max_tokens=80, timeout=_timeout())
     if _looks_like_code(raw):
         # 网关把卡片当聊天问题回答了(吐了一堆代码), 换个说法再要一次
         logger.warning("标题返回疑似代码，换个说法再要一次")
@@ -532,13 +569,13 @@ def generate_title(content_md: str) -> str:
             [{"role": "user",
               "content": f"给下面这张学习卡片起一个 10~20 字的中文标题，"
                          f"只输出标题本身，不要代码、不要讲解、不要举例：\n\n{text}"}],
-            max_tokens=50, timeout=_timeout(), fallback=False)
+            max_tokens=80, timeout=_timeout(), fallback=False)
         if again and not _looks_like_code(again):
             raw = again
     title = _tidy_title(raw)
     if not title:
         raise AIError("AI 返回空标题")
-    return title[:MAX_TITLE_LEN]
+    return title
 
 
 GAP_SYSTEM = (
@@ -607,7 +644,7 @@ def gap_analysis(standard_md: str, user_summary: str) -> dict:
             {"role": "user",
              "content": f"【标准内容】\n{std}\n\n【学生复述】\n{summ}"},
         ],
-        max_tokens=600, json_mode=True, timeout=_timeout(),
+        max_tokens=900, json_mode=True, timeout=_timeout(),
     )
     return _parse_gap(raw)
 
@@ -655,7 +692,7 @@ def generate_mnemonic(title: str, content_md: str) -> str:
             {"role": "user",
              "content": f"【卡片标题】\n{head}\n\n【卡片正文】\n{std}"},
         ],
-        max_tokens=500,
+        max_tokens=1200,
         timeout=_timeout(),
     )
     text = (raw or "").strip()
@@ -664,7 +701,7 @@ def generate_mnemonic(title: str, content_md: str) -> str:
     text = re.sub(r"\s*```$", "", text).strip()
     if not text:
         raise AIError("AI 返回空速记")
-    return text[:MAX_MNEMONIC_LEN]
+    return _clip(text, MAX_MNEMONIC_LEN)
 
 
 def _missing_fields(c: dict) -> list:
