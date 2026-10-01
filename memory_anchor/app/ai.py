@@ -561,6 +561,8 @@ def _tidy_title(raw: str) -> str:
     t = t.replace("**", "").replace("`", "")       # 去掉模型爱加的加粗/代码标记
     t = re.sub(r"^(标题|主题)\s*[:：]\s*", "", t)
     t = re.sub(r"^#+\s*", "", t)                    # 模型偶尔加 markdown 标题标记
+    # 模型把 undefined/null 当前缀吐出来: "undefined：单调有界准则" -> "单调有界准则"
+    t = re.sub(r"^(?:undefined|null|none|nan)\s*[:：\-—]?\s*", "", t, flags=re.I)
     t = t.split("\n")[0].strip()
     t = re.split(r"#{2,}", t)[0].strip()            # 模型回长文时切掉 markdown 小标题
     if not t or t.lower() in _JUNK_LITERALS:        # 模型偶尔就回一个 "undefined"
