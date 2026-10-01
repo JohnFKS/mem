@@ -522,6 +522,13 @@ TITLE_SYSTEM = (
 )
 
 
+# 模型/网关偶尔直接回这些字面量, 不能当成标题或速记写进卡片
+_JUNK_LITERALS = {
+    "undefined", "null", "none", "nan", "n/a", "na", "-", "--", "无", "无标题",
+    "undefinedundefined", "error", "错误",
+}
+
+
 def _clip(text: str, limit: int, ellipsis: bool = True) -> str:
     """超长时在最后一个句读处收尾, 而不是硬截在半句话中间。
 
@@ -556,7 +563,7 @@ def _tidy_title(raw: str) -> str:
     t = re.sub(r"^#+\s*", "", t)                    # 模型偶尔加 markdown 标题标记
     t = t.split("\n")[0].strip()
     t = re.split(r"#{2,}", t)[0].strip()            # 模型回长文时切掉 markdown 小标题
-    if not t:
+    if not t or t.lower() in _JUNK_LITERALS:        # 模型偶尔就回一个 "undefined"
         return ""
     if len(t) > MAX_TITLE_LEN:
         t = _clip(t, MAX_TITLE_LEN, ellipsis=False)
@@ -582,7 +589,8 @@ def _tidy_title(raw: str) -> str:
         m = re.match(r"^(.{6,24}?)[。！？!?；;，,]", t)
         if m:
             t = m.group(1)
-    return t.strip(" ，,、；;：:。.")
+    t = t.strip(" ，,、；;：:。.")
+    return "" if t.lower() in _JUNK_LITERALS else t
 
 
 def generate_title(content_md: str) -> str:
@@ -729,11 +737,11 @@ def generate_mnemonic(title: str, content_md: str) -> str:
         max_tokens=1200,
         timeout=_timeout(),
     )
-    text = (raw or "").strip()
+    text = _strip_tool_calls(raw)
     # 兜底清理: 去掉模型偶尔裹上的代码围栏
     text = re.sub(r"^```(?:markdown|md)?\s*", "", text).strip()
     text = re.sub(r"\s*```$", "", text).strip()
-    if not text:
+    if not text or text.lower() in _JUNK_LITERALS:
         raise AIError("AI 返回空速记")
     return _clip(text, MAX_MNEMONIC_LEN)
 

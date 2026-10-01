@@ -641,7 +641,9 @@ const RecordsTab = {
         aiTitleBtn.textContent = '✨ 生成中…';
         try {
           const res = await api('/api/ai/title', { method: 'POST', body: { content_md: content } });
-          document.getElementById('edTitle').value = res.title;
+          const title = (res && typeof res.title === 'string') ? res.title.trim() : '';
+          if (!title) { toast('AI 没给出标题，再试一次或自己写', 'error'); return; }
+          document.getElementById('edTitle').value = title;
           toast('已生成标题', 'success');
         } catch (e) {
           const disabled = aiNoteFailure('生成标题失败', e);
