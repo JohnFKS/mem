@@ -479,6 +479,7 @@ def _tidy_title(raw: str) -> str:
     t = re.sub(r"^(标题|主题)\s*[:：]\s*", "", t)
     t = re.sub(r"^#+\s*", "", t)                    # 模型偶尔加 markdown 标题标记
     t = t.split("\n")[0].strip()
+    t = re.split(r"#{2,}", t)[0].strip()            # 模型回长文时切掉 markdown 小标题
     if not t:
         return ""
     if len(t) > MAX_TITLE_LEN:
