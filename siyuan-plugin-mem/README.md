@@ -13,20 +13,39 @@
 
 ```bash
 npm install
-npm run build
+npm run pack        # 构建 + 打包, 产出 package.zip (内部文件位于压缩包根目录)
 ```
 
-把构建产物放到思源工作空间的插件目录：
+> ⚠️ **构建格式必须是 CommonJS，不能改 iife**：思源插件加载器通过
+> `require("siyuan")` 注入 `siyuan` 模块，**不会设置全局 `siyuan`**。若用 iife，
+> 产物尾部会写成 `}(siyuan)` 引用一个不存在的全局，加载瞬间 `s.Plugin` 抛错、
+> 插件被整体禁用——表现就是「找不到设置、右键也没菜单」。参见 `vite.config.ts`
+> 的 `formats: ["cjs"]` 与 `output.exports: "default"`。
+
+**方式一（推荐）**：思源「设置 → 集市 → 已下载/获取 → 从本地安装」，选择 `package.zip`。
+
+**方式二（手动）**：把 `package.zip` 解压后，**让文件直接位于插件目录下**：
 
 ```
 工作空间/data/plugins/siyuan-plugin-mem/
 ├── plugin.json
-└── index.js      <- dist/index.js 改名
+├── index.js
+├── index.css
+├── icon.png
+├── preview.png
+└── README.md
 ```
 
-重启思源或在「设置 → 集市 → 已下载」里启用插件。
+> ⚠️ 常见坑：不要把压缩包再套一层 `siyuan-plugin-mem/` 子目录放进 `data/plugins/`，
+> 否则路径变成 `data/plugins/siyuan-plugin-mem/siyuan-plugin-mem/…`，思源找不到
+> `plugin.json` / `index.js`，插件会**静默不加载**——表现就是「找不到设置、右键也没有菜单」。
+
+放好后重启思源，或「设置 → 集市 → 已下载」里启用插件。
 
 ## 使用
+
+> 打开设置：**点击顶栏右侧的"记忆锚快捕"图标**（图钉），或在
+> 「设置 → 集市 → 已下载 → 插件」里点该插件的齿轮。
 
 1. 在思源编辑器里选中一段文字（不选则发送光标所在整个块）
 2. 右键，菜单里有两项：
@@ -48,6 +67,8 @@ npm run build
 代码块内的内容**不会被清洗**。
 
 ## 设置
+
+**打开方式**：顶栏右侧「记忆锚快捕」图钉图标，或插件列表里该插件的齿轮。
 
 插件设置里可配：
 

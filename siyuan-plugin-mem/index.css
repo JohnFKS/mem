@@ -1,0 +1,5 @@
+/* 记忆锚快捕 (siyuan-plugin-mem) 插件样式 */
+/* 设置对话框复用思源 b3-* 组件类, 这里只做最小化补充 */
+.mem-settings-content {
+  gap: 12px;
+}

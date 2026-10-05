@@ -2,7 +2,7 @@
   "name": "siyuan-plugin-mem",
   "author": "JohnFKS",
   "url": "https://github.com/JohnFKS/mem",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "3.0.0",
   "backends": ["all"],
   "frontends": ["desktop", "browser"],
@@ -16,7 +16,7 @@
   },
   "readme": {
     "default": "README.md",
-    "zh_CN": "README_zh_CN.md"
+    "zh_CN": "README.md"
   },
   "funding": {
     "openCollective": "",
